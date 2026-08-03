@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   mkdir as nativeMkdir,
   readFile as nativeReadFile,
-  rm as nativeRm,
+  readdir as nativeReaddir,
   rename as nativeRename,
   stat as nativeStat,
   unlink as nativeUnlink,
@@ -28,18 +28,31 @@ interface RunLockOwner {
 const LOCK_RETRY_DELAY_MS = 50;
 const LOCK_ACQUIRE_TIMEOUT_MS = 15 * 60_000;
 const INCOMPLETE_LOCK_STALE_MS = 30_000;
+const LOCK_TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/;
+const CHOOSING_FILE_PATTERN = /^([A-Za-z0-9_-]+)\.choosing$/;
+const TICKET_FILE_PATTERN = /^(\d+)-([A-Za-z0-9_-]+)\.ticket$/;
+const TICKET_SEQUENCE_WIDTH = 20;
+
+interface RunLockTicket {
+  file: string;
+  sequence: bigint;
+  token: string;
+}
 
 export interface RunLockOptions {
   lockRetryDelayMs?: number;
   lockAcquireTimeoutMs?: number;
   incompleteLockStaleMs?: number;
+  tokenFactory?: () => string;
 }
 
 export interface StateFsAdapter {
   mkdir(target: string, options: MakeDirectoryOptions & { recursive: true }): Promise<string | undefined>;
   readFile(target: string, encoding: BufferEncoding): Promise<string>;
   writeFile(target: string, contents: string, options: WriteFileOptions): Promise<void>;
+  readdir(target: string): Promise<string[]>;
   rename(from: string, to: string): Promise<void>;
+  stat(target: string): Promise<{ mtimeMs: number }>;
   unlink(target: string): Promise<void>;
 }
 
@@ -47,7 +60,9 @@ const stateFs: StateFsAdapter = {
   mkdir: nativeMkdir,
   readFile: nativeReadFile,
   writeFile: nativeWriteFile,
+  readdir: nativeReaddir,
   rename: nativeRename,
+  stat: nativeStat,
   unlink: nativeUnlink
 };
 
@@ -148,177 +163,151 @@ export class FileRunStateStore {
   private async acquireRunLock(): Promise<() => Promise<void>> {
     const directory = path.dirname(this.stateFile);
     const lockDirectory = `${this.stateFile}.lock`;
-    const recoveryDirectory = `${lockDirectory}.recovery`;
-    const ownerFile = path.join(lockDirectory, 'owner.json');
-    const recoveryOwnerFile = path.join(recoveryDirectory, 'owner.json');
     const startedAtMs = Date.now();
+    const token = (this.lockOptions.tokenFactory ?? randomUUID)();
+    if (!LOCK_TOKEN_PATTERN.test(token)) {
+      throw new Error('Run state lock token contains unsafe characters');
+    }
     const owner: RunLockOwner = {
       pid: process.pid,
-      token: randomUUID(),
+      token,
       acquiredAtMs: startedAtMs
     };
-
-    await nativeMkdir(directory, { recursive: true });
-    while (true) {
-      if (Date.now() - startedAtMs >= (this.lockOptions.lockAcquireTimeoutMs ?? LOCK_ACQUIRE_TIMEOUT_MS)) {
-        throw new Error('Timed out waiting for the run state lock');
-      }
-
-      const recoveryState = await this.recoverAbandonedRecoveryGate(
-        recoveryDirectory,
-        recoveryOwnerFile
-      );
-      if (recoveryState === 'recovered') {
-        continue;
-      }
-      if (recoveryState === 'active') {
-        await this.waitBeforeLockRetry();
-        continue;
-      }
-
-      try {
-        await nativeMkdir(lockDirectory, { mode: 0o700 });
-        try {
-          await nativeWriteFile(ownerFile, JSON.stringify(owner), {
-            encoding: 'utf8',
-            mode: 0o600,
-            flag: 'wx'
-          });
-        } catch (error) {
-          await nativeRm(lockDirectory, { recursive: true, force: true });
-          throw error;
-        }
-        return async () => {
-          const currentOwner = await this.readRunLockOwner(ownerFile);
-          if (currentOwner?.token !== owner.token) {
-            throw new Error('Run state lock ownership was lost');
-          }
-          await nativeRm(lockDirectory, { recursive: true, force: false });
-        };
-      } catch (error) {
-        if (!hasErrorCode(error, 'EEXIST')) {
-          throw error;
-        }
-      }
-
-      if (await this.recoverDeadRunLock(
-        lockDirectory,
-        recoveryDirectory,
-        ownerFile,
-        recoveryOwnerFile
-      )) {
-        continue;
-      }
-      await this.waitBeforeLockRetry();
-    }
-  }
-
-  private async recoverDeadRunLock(
-    lockDirectory: string,
-    recoveryDirectory: string,
-    ownerFile: string,
-    recoveryOwnerFile: string
-  ): Promise<boolean> {
-    const owner = await this.readRunLockOwner(ownerFile);
-    if (owner !== null && isProcessAlive(owner.pid)) {
-      return false;
-    }
-    if (owner === null) {
-      try {
-        const lockStat = await nativeStat(lockDirectory);
-        if (Date.now() - lockStat.mtimeMs < this.incompleteLockStaleMs()) {
-          return false;
-        }
-      } catch (error) {
-        if (isMissingFile(error)) return true;
-        throw error;
-      }
-    }
-
-    const recoveryOwner = await this.tryAcquireRecoveryGate(
-      recoveryDirectory,
-      recoveryOwnerFile
-    );
-    if (recoveryOwner === null) return false;
+    const choosingFile = path.join(lockDirectory, `${token}.choosing`);
+    let contenderFile = choosingFile;
+    let ownsContenderFile = false;
 
     try {
-      const currentOwner = await this.readRunLockOwner(ownerFile);
-      if (currentOwner !== null && isProcessAlive(currentOwner.pid)) {
-        return false;
-      }
-      if (currentOwner === null) {
-        try {
-          const lockStat = await nativeStat(lockDirectory);
-          if (Date.now() - lockStat.mtimeMs < this.incompleteLockStaleMs()) {
-            return false;
-          }
-        } catch (error) {
-          if (isMissingFile(error)) return true;
-          throw error;
-        }
-      }
-      await nativeRm(lockDirectory, { recursive: true, force: true });
-      return true;
-    } finally {
-      const currentRecoveryOwner = await this.readRunLockOwner(recoveryOwnerFile);
-      if (currentRecoveryOwner?.token !== recoveryOwner.token) {
-        throw new Error('Run state recovery lock ownership was lost');
-      }
-      await nativeRm(recoveryDirectory, { recursive: true, force: true });
-    }
-  }
-
-  private async tryAcquireRecoveryGate(
-    recoveryDirectory: string,
-    recoveryOwnerFile: string
-  ): Promise<RunLockOwner | null> {
-    const owner: RunLockOwner = {
-      pid: process.pid,
-      token: randomUUID(),
-      acquiredAtMs: Date.now()
-    };
-    try {
-      await nativeMkdir(recoveryDirectory, { mode: 0o700 });
-    } catch (error) {
-      if (hasErrorCode(error, 'EEXIST')) return null;
-      throw error;
-    }
-
-    try {
-      await nativeWriteFile(recoveryOwnerFile, JSON.stringify(owner), {
+      await this.fsAdapter.mkdir(directory, { recursive: true });
+      await this.fsAdapter.mkdir(lockDirectory, { recursive: true, mode: 0o700 });
+      this.assertRunLockDeadline(startedAtMs);
+      await this.fsAdapter.writeFile(choosingFile, JSON.stringify(owner), {
         encoding: 'utf8',
         mode: 0o600,
         flag: 'wx'
       });
-      return owner;
+      ownsContenderFile = true;
+      const sequence = await this.nextTicketSequence(lockDirectory);
+      const ticketFile = path.join(
+        lockDirectory,
+        `${sequence.toString().padStart(TICKET_SEQUENCE_WIDTH, '0')}-${token}.ticket`
+      );
+      await this.fsAdapter.rename(choosingFile, ticketFile);
+      contenderFile = ticketFile;
+
+      while (true) {
+        this.assertRunLockDeadline(startedAtMs);
+        const contenders = await this.collectLiveContenders(lockDirectory);
+        const ownTicket = contenders.tickets.find((ticket) => ticket.file === ticketFile);
+        if (ownTicket === undefined) {
+          throw new Error('Run state lock ownership was lost');
+        }
+        if (!contenders.hasChoosing && contenders.tickets[0]?.file === ticketFile) {
+          return async () => {
+            const currentOwner = await this.readRunLockOwner(ticketFile);
+            if (currentOwner?.token !== owner.token) {
+              throw new Error('Run state lock ownership was lost');
+            }
+            await this.unlinkUniqueContender(ticketFile);
+          };
+        }
+        await this.waitBeforeLockRetry();
+      }
     } catch (error) {
-      await nativeRm(recoveryDirectory, { recursive: true, force: true });
+      if (ownsContenderFile) await this.unlinkUniqueContender(contenderFile);
       throw error;
     }
   }
 
-  private async recoverAbandonedRecoveryGate(
-    recoveryDirectory: string,
-    recoveryOwnerFile: string
-  ): Promise<'missing' | 'active' | 'recovered'> {
-    let recoveryStat;
+  private async nextTicketSequence(lockDirectory: string): Promise<bigint> {
+    const entries = await this.fsAdapter.readdir(lockDirectory);
+    let maximum = -1n;
+    for (const entry of entries) {
+      const ticket = this.parseTicket(entry, lockDirectory);
+      if (ticket !== null && ticket.sequence > maximum) {
+        maximum = ticket.sequence;
+      }
+    }
+    return maximum + 1n;
+  }
+
+  private async collectLiveContenders(
+    lockDirectory: string
+  ): Promise<{ hasChoosing: boolean; tickets: RunLockTicket[] }> {
+    const entries = await this.fsAdapter.readdir(lockDirectory);
+    const tickets: RunLockTicket[] = [];
+    let hasChoosing = false;
+
+    for (const entry of entries) {
+      const choosingMatch = CHOOSING_FILE_PATTERN.exec(entry);
+      if (choosingMatch !== null) {
+        const token = choosingMatch[1];
+        hasChoosing = true;
+        if (token !== undefined) {
+          await this.isLiveContender(path.join(lockDirectory, entry), token);
+        }
+        continue;
+      }
+
+      const ticket = this.parseTicket(entry, lockDirectory);
+      if (ticket !== null && await this.isLiveContender(ticket.file, ticket.token)) {
+        tickets.push(ticket);
+      }
+    }
+
+    tickets.sort((left, right) => {
+      if (left.sequence < right.sequence) return -1;
+      if (left.sequence > right.sequence) return 1;
+      if (left.token < right.token) return -1;
+      if (left.token > right.token) return 1;
+      return 0;
+    });
+    return { hasChoosing, tickets };
+  }
+
+  private parseTicket(entry: string, lockDirectory: string): RunLockTicket | null {
+    const match = TICKET_FILE_PATTERN.exec(entry);
+    const sequence = match?.[1];
+    const token = match?.[2];
+    if (sequence === undefined || token === undefined) return null;
+    return { file: path.join(lockDirectory, entry), sequence: BigInt(sequence), token };
+  }
+
+  private async isLiveContender(contenderFile: string, expectedToken: string): Promise<boolean> {
+    const owner = await this.readRunLockOwner(contenderFile);
+    if (owner !== null) {
+      if (owner.token === expectedToken && isProcessAlive(owner.pid)) {
+        return true;
+      }
+      await this.unlinkUniqueContender(contenderFile);
+      return false;
+    }
+
     try {
-      recoveryStat = await nativeStat(recoveryDirectory);
+      const contenderStat = await this.fsAdapter.stat(contenderFile);
+      if (Date.now() - contenderStat.mtimeMs < this.incompleteLockStaleMs()) {
+        return true;
+      }
     } catch (error) {
-      if (isMissingFile(error)) return 'missing';
+      if (isMissingFile(error)) return false;
       throw error;
     }
+    await this.unlinkUniqueContender(contenderFile);
+    return false;
+  }
 
-    const owner = await this.readRunLockOwner(recoveryOwnerFile);
-    if (owner !== null && isProcessAlive(owner.pid)) {
-      return 'active';
+  private async unlinkUniqueContender(contenderFile: string): Promise<void> {
+    try {
+      await this.fsAdapter.unlink(contenderFile);
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
     }
-    if (owner === null && Date.now() - recoveryStat.mtimeMs < this.incompleteLockStaleMs()) {
-      return 'active';
-    }
+  }
 
-    await nativeRm(recoveryDirectory, { recursive: true, force: true });
-    return 'recovered';
+  private assertRunLockDeadline(startedAtMs: number): void {
+    if (Date.now() - startedAtMs >= (this.lockOptions.lockAcquireTimeoutMs ?? LOCK_ACQUIRE_TIMEOUT_MS)) {
+      throw new Error('Timed out waiting for the run state lock');
+    }
   }
 
   private incompleteLockStaleMs(): number {
@@ -334,7 +323,7 @@ export class FileRunStateStore {
 
   private async readRunLockOwner(ownerFile: string): Promise<RunLockOwner | null> {
     try {
-      const parsed: unknown = JSON.parse(await nativeReadFile(ownerFile, 'utf8'));
+      const parsed: unknown = JSON.parse(await this.fsAdapter.readFile(ownerFile, 'utf8'));
       return isRunLockOwner(parsed) ? parsed : null;
     } catch (error) {
       if (isMissingFile(error) || error instanceof SyntaxError) {

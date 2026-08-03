@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const stateFile = process.argv[2];
@@ -9,15 +9,39 @@ if (stateFile === undefined || !['remove', 'keep'].includes(mainLockAction ?? ''
 }
 
 const lockDirectory = `${stateFile}.lock`;
-const recoveryDirectory = `${lockDirectory}.recovery`;
-await mkdir(recoveryDirectory, { mode: 0o700 });
-await writeFile(path.join(recoveryDirectory, 'owner.json'), JSON.stringify({
+await mkdir(lockDirectory, { recursive: true, mode: 0o700 });
+const existingContenders = await readdir(lockDirectory);
+let maximumSequence = -1n;
+for (const entry of existingContenders) {
+  const match = /^(\d+)-[A-Za-z0-9_-]+\.ticket$/.exec(entry);
+  if (match?.[1] !== undefined) {
+    maximumSequence = maximumSequence > BigInt(match[1])
+      ? maximumSequence
+      : BigInt(match[1]);
+  }
+}
+const token = randomUUID();
+const ticketFile = path.join(
+  lockDirectory,
+  `${(maximumSequence + 1n).toString().padStart(20, '0')}-${token}.ticket`
+);
+await writeFile(ticketFile, JSON.stringify({
   pid: process.pid,
-  token: randomUUID(),
+  token,
   acquiredAtMs: Date.now()
 }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
 if (mainLockAction === 'remove') {
-  await rm(lockDirectory, { recursive: true, force: true });
+  for (const entry of existingContenders) {
+    if (entry.endsWith('.choosing') || entry.endsWith('.ticket')) {
+      try {
+        await unlink(path.join(lockDirectory, entry));
+      } catch (error) {
+        if (!(typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')) {
+          throw error;
+        }
+      }
+    }
+  }
 }
 process.stdout.write('recovery-gate-ready\n');
 await new Promise<void>(() => {
