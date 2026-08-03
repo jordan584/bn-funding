@@ -73,6 +73,18 @@ export interface ScheduledSlot {
   scheduledAtMs: number;
 }
 
+export type JobResult =
+  | { status: 'sent'; slot: string; rowCount: 20 }
+  | { status: 'dry-run'; slot: string; rowCount: 20; text: string }
+  | { status: 'skipped'; slot: string; reason: 'already-sent' };
+
+export interface RunFundingJobOptions {
+  slot: ScheduledSlot;
+  trigger: TriggerSource;
+  dryRun: boolean;
+  force: boolean;
+}
+
 export interface Logger {
   info(event: string, fields?: Record<string, unknown>): void;
   warn(event: string, fields?: Record<string, unknown>): void;
