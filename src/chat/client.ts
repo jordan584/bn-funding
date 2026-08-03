@@ -3,6 +3,13 @@ import { log } from '../logger.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_ERROR_BODY_LENGTH = 500;
+const REDACTED = '[REDACTED]';
+const GOOGLE_CHAT_WEBHOOK_PATTERN =
+  /https?:\/\/chat\.googleapis\.com(?:[\/?#][^\s"']*)?/giu;
+
+function redactGoogleChatWebhooks(value: string): string {
+  return value.replace(GOOGLE_CHAT_WEBHOOK_PATTERN, REDACTED);
+}
 
 export interface GoogleChatClientOptions {
   webhookUrl: URL;
@@ -80,7 +87,7 @@ export class GoogleChatClient {
   private async responseErrorMessage(response: Response): Promise<string> {
     let body = '';
     try {
-      body = (await response.text()).slice(0, MAX_ERROR_BODY_LENGTH);
+      body = redactGoogleChatWebhooks(await response.text()).slice(0, MAX_ERROR_BODY_LENGTH);
     } catch {
       // The HTTP status still communicates the failed request class.
     }

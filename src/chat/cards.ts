@@ -15,13 +15,14 @@ function escapeHtml(value: string): string {
 }
 
 function fundingHtml(value: string, sign: number): string {
+  const signedValue = sign > 0 ? `+${value}` : value;
   if (sign > 0) {
-    return `<font color="${POSITIVE_FUNDING_COLOR}">${escapeHtml(value)}</font>`;
+    return `<font color="${POSITIVE_FUNDING_COLOR}">${escapeHtml(signedValue)}</font>`;
   }
   if (sign < 0) {
-    return `<font color="${NEGATIVE_FUNDING_COLOR}">${escapeHtml(value)}</font>`;
+    return `<font color="${NEGATIVE_FUNDING_COLOR}">${escapeHtml(signedValue)}</font>`;
   }
-  return escapeHtml(value);
+  return escapeHtml(signedValue);
 }
 
 function metricsHtml(row: FundingRow): string {

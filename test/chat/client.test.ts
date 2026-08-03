@@ -73,6 +73,21 @@ for (const status of [400, 429, 500]) {
   });
 }
 
+test('redacts a webhook URL echoed by a non-2xx response before constructing the request error', async () => {
+  const client = new GoogleChatClient({
+    webhookUrl,
+    fetch: queuedFetch([new Response(`upstream echo: ${webhookUrl}`, { status: 500 })], [])
+  });
+  const captured = await captureStdout(async () => {
+    await client.send(message);
+  });
+
+  assert.ok(captured.error instanceof GoogleChatRequestError);
+  assert.match(captured.error.message, /\[REDACTED\]/);
+  assert.doesNotMatch(captured.error.message, /key=secret-key|token=secret-token|chat\.googleapis\.com/);
+  assert.doesNotMatch(captured.output, /key=secret-key|token=secret-token/);
+});
+
 test('classifies a TimeoutError as an ambiguous non-retryable timeout without leaking the webhook URL', async () => {
   const seenRequests: SeenRequest[] = [];
   const client = new GoogleChatClient({

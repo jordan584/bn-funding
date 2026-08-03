@@ -80,7 +80,7 @@ test('puts ranks 1 through 10 in the first card with a two-column row and divide
     {
       horizontalSizeStyle: 'FILL_AVAILABLE_SPACE',
       verticalAlignment: 'TOP',
-      widgets: [{ textParagraph: { text: '当前：<font color="#D93025">0.0100%</font>/1h（87.60%）<br>24h：<font color="#D93025">0.0300%</font>（10.95%）<br>7日：<font color="#D93025">0.0500%</font>（2.61%）' } }]
+      widgets: [{ textParagraph: { text: '当前：<font color="#D93025">+0.0100%</font>/1h（87.60%）<br>24h：<font color="#D93025">+0.0300%</font>（10.95%）<br>7日：<font color="#D93025">+0.0500%</font>（2.61%）' } }]
     }
   ]);
   assert.equal(widgets.filter((widget) => JSON.stringify(widget) === JSON.stringify({ divider: {} })).length, 9);
@@ -114,10 +114,26 @@ test('includes the specified card copy, signed color semantics, and partial-hist
   assert.match(serialized, /Funding 为正表示多头支付空头。/);
   assert.match(serialized, /括号内为 APR 年化。/);
   assert.match(serialized, /\* 新上线资产的 7 日数据按可用历史累计。/);
-  assert.match(metricsText(message, 0, 0), /<font color="#D93025">0\.0100%<\/font>/);
+  assert.match(metricsText(message, 0, 0), /<font color="#D93025">\+0\.0100%<\/font>/);
   assert.match(metricsText(message, 0, 1), /<font color="#188038">-0\.0200%<\/font>/);
   assert.match(metricsText(message, 0, 2), /当前：0\.0000%\/8h/);
-  assert.match(metricsText(message, 0, 2), /0\.0500%<\/font>（2\.61%）\*/);
+  assert.match(metricsText(message, 0, 2), /\+0\.0500%<\/font>（2\.61%）\*/);
+});
+
+test('makes Funding direction visible with a sign before color, including rounded positive zero', () => {
+  const message = buildFundingChatMessage(leaderboard([
+    row(1, { currentRate: new Decimal('0.0001') }),
+    row(2, { currentRate: new Decimal('0.0000000001') }),
+    row(3, { currentRate: new Decimal('0') }),
+    row(4, { currentRate: new Decimal('-0.0002') }),
+    ...Array.from({ length: 16 }, (_, index) => row(index + 5))
+  ]));
+
+  assert.match(metricsText(message, 0, 0), /当前：<font color="#D93025">\+0\.0100%<\/font>/);
+  assert.match(metricsText(message, 0, 1), /当前：<font color="#D93025">\+0\.0000%<\/font>/);
+  assert.match(metricsText(message, 0, 2), /当前：0\.0000%\/8h/);
+  assert.doesNotMatch(metricsText(message, 0, 2), /当前：\+/);
+  assert.match(metricsText(message, 0, 3), /当前：<font color="#188038">-0\.0200%<\/font>/);
 });
 
 test('escapes every dynamic HTML value and stays below the Google Chat UTF-8 message limit', () => {
