@@ -232,6 +232,73 @@ test('retries three Binance timeouts before throwing a typed timeout error', asy
   assert.deepEqual(sleeps, [500, 1_000, 2_000]);
 });
 
+test('retries a timeout while consuming a successful response body before throwing a typed timeout', async () => {
+  const seenRequests: SeenRequest[] = [];
+  const sleeps: number[] = [];
+  const client = new BinanceClient({
+    baseUrl,
+    timeoutMs: 1,
+    fetch: async (input, init) => {
+      seenRequests.push({
+        url: new URL(typeof input === 'string' || input instanceof URL ? input : input.url),
+        ...(init === undefined ? {} : { init })
+      });
+      const signal = init?.signal;
+      assert.ok(signal instanceof AbortSignal);
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          const keepEventLoopAlive = setTimeout(() => {}, 1_000);
+          signal.addEventListener('abort', () => {
+            clearTimeout(keepEventLoopAlive);
+            controller.error(signal.reason);
+          }, { once: true });
+        }
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+    sleep: async (ms) => { sleeps.push(ms); },
+    random: () => 0
+  });
+
+  const error = await client.getServerTime().then(
+    () => undefined,
+    (caught: unknown) => caught
+  );
+
+  assert.deepEqual({
+    attempts: seenRequests.length,
+    errorName: error instanceof Error ? error.name : typeof error
+  }, {
+    attempts: 4,
+    errorName: 'BinanceTimeoutError'
+  });
+  assert.ok(error instanceof BinanceTimeoutError);
+  assert.deepEqual(sleeps, [500, 1_000, 2_000]);
+});
+
+test('rejects malformed JSON immediately without treating it as a timeout', async () => {
+  const seenRequests: SeenRequest[] = [];
+  const sleeps: number[] = [];
+  const client = new BinanceClient({
+    baseUrl,
+    fetch: queuedFetch([
+      new Response('{not valid JSON', {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    ], seenRequests),
+    sleep: async (ms) => { sleeps.push(ms); }
+  });
+
+  await assert.rejects(client.getServerTime(), (error: unknown) => {
+    assert.ok(error instanceof BinanceRequestError);
+    assert.equal(error instanceof BinanceTimeoutError, false);
+    assert.equal(error.message, 'Binance response was not valid JSON');
+    return true;
+  });
+  assert.equal(seenRequests.length, 1);
+  assert.deepEqual(sleeps, []);
+});
+
 test('bounds a Binance HTTP error response body at 500 characters', async () => {
   const body = 'x'.repeat(600);
   const bodyClient = new BinanceClient({

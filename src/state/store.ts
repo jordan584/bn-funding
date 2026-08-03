@@ -29,6 +29,12 @@ const LOCK_RETRY_DELAY_MS = 50;
 const LOCK_ACQUIRE_TIMEOUT_MS = 15 * 60_000;
 const INCOMPLETE_LOCK_STALE_MS = 30_000;
 
+export interface RunLockOptions {
+  lockRetryDelayMs?: number;
+  lockAcquireTimeoutMs?: number;
+  incompleteLockStaleMs?: number;
+}
+
 export interface StateFsAdapter {
   mkdir(target: string, options: MakeDirectoryOptions & { recursive: true }): Promise<string | undefined>;
   readFile(target: string, encoding: BufferEncoding): Promise<string>;
@@ -88,7 +94,8 @@ function parseState(contents: string): RunStateFile {
 export class FileRunStateStore {
   constructor(
     private readonly stateFile: string,
-    private readonly fsAdapter: StateFsAdapter = stateFs
+    private readonly fsAdapter: StateFsAdapter = stateFs,
+    private readonly lockOptions: RunLockOptions = {}
   ) {}
 
   async withRunLock<T>(work: () => Promise<T>): Promise<T> {
@@ -143,6 +150,7 @@ export class FileRunStateStore {
     const lockDirectory = `${this.stateFile}.lock`;
     const recoveryDirectory = `${lockDirectory}.recovery`;
     const ownerFile = path.join(lockDirectory, 'owner.json');
+    const recoveryOwnerFile = path.join(recoveryDirectory, 'owner.json');
     const startedAtMs = Date.now();
     const owner: RunLockOwner = {
       pid: process.pid,
@@ -152,47 +160,64 @@ export class FileRunStateStore {
 
     await nativeMkdir(directory, { recursive: true });
     while (true) {
-      if (!(await this.pathExists(recoveryDirectory))) {
+      if (Date.now() - startedAtMs >= (this.lockOptions.lockAcquireTimeoutMs ?? LOCK_ACQUIRE_TIMEOUT_MS)) {
+        throw new Error('Timed out waiting for the run state lock');
+      }
+
+      const recoveryState = await this.recoverAbandonedRecoveryGate(
+        recoveryDirectory,
+        recoveryOwnerFile
+      );
+      if (recoveryState === 'recovered') {
+        continue;
+      }
+      if (recoveryState === 'active') {
+        await this.waitBeforeLockRetry();
+        continue;
+      }
+
+      try {
+        await nativeMkdir(lockDirectory, { mode: 0o700 });
         try {
-          await nativeMkdir(lockDirectory, { mode: 0o700 });
-          try {
-            await nativeWriteFile(ownerFile, JSON.stringify(owner), {
-              encoding: 'utf8',
-              mode: 0o600,
-              flag: 'wx'
-            });
-          } catch (error) {
-            await nativeRm(lockDirectory, { recursive: true, force: true });
-            throw error;
-          }
-          return async () => {
-            const currentOwner = await this.readRunLockOwner(ownerFile);
-            if (currentOwner?.token !== owner.token) {
-              throw new Error('Run state lock ownership was lost');
-            }
-            await nativeRm(lockDirectory, { recursive: true, force: false });
-          };
+          await nativeWriteFile(ownerFile, JSON.stringify(owner), {
+            encoding: 'utf8',
+            mode: 0o600,
+            flag: 'wx'
+          });
         } catch (error) {
-          if (!hasErrorCode(error, 'EEXIST')) {
-            throw error;
+          await nativeRm(lockDirectory, { recursive: true, force: true });
+          throw error;
+        }
+        return async () => {
+          const currentOwner = await this.readRunLockOwner(ownerFile);
+          if (currentOwner?.token !== owner.token) {
+            throw new Error('Run state lock ownership was lost');
           }
+          await nativeRm(lockDirectory, { recursive: true, force: false });
+        };
+      } catch (error) {
+        if (!hasErrorCode(error, 'EEXIST')) {
+          throw error;
         }
       }
 
-      if (await this.recoverDeadRunLock(lockDirectory, recoveryDirectory, ownerFile)) {
+      if (await this.recoverDeadRunLock(
+        lockDirectory,
+        recoveryDirectory,
+        ownerFile,
+        recoveryOwnerFile
+      )) {
         continue;
       }
-      if (Date.now() - startedAtMs >= LOCK_ACQUIRE_TIMEOUT_MS) {
-        throw new Error('Timed out waiting for the run state lock');
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS));
+      await this.waitBeforeLockRetry();
     }
   }
 
   private async recoverDeadRunLock(
     lockDirectory: string,
     recoveryDirectory: string,
-    ownerFile: string
+    ownerFile: string,
+    recoveryOwnerFile: string
   ): Promise<boolean> {
     const owner = await this.readRunLockOwner(ownerFile);
     if (owner !== null && isProcessAlive(owner.pid)) {
@@ -201,7 +226,7 @@ export class FileRunStateStore {
     if (owner === null) {
       try {
         const lockStat = await nativeStat(lockDirectory);
-        if (Date.now() - lockStat.mtimeMs < INCOMPLETE_LOCK_STALE_MS) {
+        if (Date.now() - lockStat.mtimeMs < this.incompleteLockStaleMs()) {
           return false;
         }
       } catch (error) {
@@ -210,12 +235,11 @@ export class FileRunStateStore {
       }
     }
 
-    try {
-      await nativeMkdir(recoveryDirectory, { mode: 0o700 });
-    } catch (error) {
-      if (hasErrorCode(error, 'EEXIST')) return false;
-      throw error;
-    }
+    const recoveryOwner = await this.tryAcquireRecoveryGate(
+      recoveryDirectory,
+      recoveryOwnerFile
+    );
+    if (recoveryOwner === null) return false;
 
     try {
       const currentOwner = await this.readRunLockOwner(ownerFile);
@@ -225,7 +249,7 @@ export class FileRunStateStore {
       if (currentOwner === null) {
         try {
           const lockStat = await nativeStat(lockDirectory);
-          if (Date.now() - lockStat.mtimeMs < INCOMPLETE_LOCK_STALE_MS) {
+          if (Date.now() - lockStat.mtimeMs < this.incompleteLockStaleMs()) {
             return false;
           }
         } catch (error) {
@@ -236,8 +260,76 @@ export class FileRunStateStore {
       await nativeRm(lockDirectory, { recursive: true, force: true });
       return true;
     } finally {
+      const currentRecoveryOwner = await this.readRunLockOwner(recoveryOwnerFile);
+      if (currentRecoveryOwner?.token !== recoveryOwner.token) {
+        throw new Error('Run state recovery lock ownership was lost');
+      }
       await nativeRm(recoveryDirectory, { recursive: true, force: true });
     }
+  }
+
+  private async tryAcquireRecoveryGate(
+    recoveryDirectory: string,
+    recoveryOwnerFile: string
+  ): Promise<RunLockOwner | null> {
+    const owner: RunLockOwner = {
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAtMs: Date.now()
+    };
+    try {
+      await nativeMkdir(recoveryDirectory, { mode: 0o700 });
+    } catch (error) {
+      if (hasErrorCode(error, 'EEXIST')) return null;
+      throw error;
+    }
+
+    try {
+      await nativeWriteFile(recoveryOwnerFile, JSON.stringify(owner), {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx'
+      });
+      return owner;
+    } catch (error) {
+      await nativeRm(recoveryDirectory, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private async recoverAbandonedRecoveryGate(
+    recoveryDirectory: string,
+    recoveryOwnerFile: string
+  ): Promise<'missing' | 'active' | 'recovered'> {
+    let recoveryStat;
+    try {
+      recoveryStat = await nativeStat(recoveryDirectory);
+    } catch (error) {
+      if (isMissingFile(error)) return 'missing';
+      throw error;
+    }
+
+    const owner = await this.readRunLockOwner(recoveryOwnerFile);
+    if (owner !== null && isProcessAlive(owner.pid)) {
+      return 'active';
+    }
+    if (owner === null && Date.now() - recoveryStat.mtimeMs < this.incompleteLockStaleMs()) {
+      return 'active';
+    }
+
+    await nativeRm(recoveryDirectory, { recursive: true, force: true });
+    return 'recovered';
+  }
+
+  private incompleteLockStaleMs(): number {
+    return this.lockOptions.incompleteLockStaleMs ?? INCOMPLETE_LOCK_STALE_MS;
+  }
+
+  private async waitBeforeLockRetry(): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(
+      resolve,
+      this.lockOptions.lockRetryDelayMs ?? LOCK_RETRY_DELAY_MS
+    ));
   }
 
   private async readRunLockOwner(ownerFile: string): Promise<RunLockOwner | null> {
@@ -252,13 +344,4 @@ export class FileRunStateStore {
     }
   }
 
-  private async pathExists(target: string): Promise<boolean> {
-    try {
-      await nativeStat(target);
-      return true;
-    } catch (error) {
-      if (isMissingFile(error)) return false;
-      throw error;
-    }
-  }
 }

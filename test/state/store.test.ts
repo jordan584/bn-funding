@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,6 +20,64 @@ async function withTempDir(run: (directory: string) => Promise<void>): Promise<v
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function spawnHelper(name: string, args: string[]): ChildProcess {
+  const helper = fileURLToPath(new URL(`../helpers/${name}`, import.meta.url));
+  return spawn(process.execPath, ['--import', 'tsx', helper, ...args], {
+    cwd: process.cwd(),
+    stdio: ['ignore', 'pipe', 'inherit']
+  });
+}
+
+async function waitForOutput(child: ChildProcess, expected: string): Promise<void> {
+  const stdout = child.stdout;
+  assert.ok(stdout !== null);
+  stdout.setEncoding('utf8');
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    stdout.once('data', (chunk: string) => {
+      if (chunk.includes(expected)) resolve();
+      else reject(new Error(`Unexpected helper output: ${chunk}`));
+    });
+  });
+}
+
+async function killAfterOutput(child: ChildProcess, expected: string): Promise<void> {
+  await waitForOutput(child, expected);
+  child.kill('SIGKILL');
+  await once(child, 'exit');
+}
+
+async function leaveDeadMainLock(statePath: string): Promise<void> {
+  await killAfterOutput(spawnHelper('lock-holder.ts', [statePath]), 'locked');
+}
+
+async function runProbe(statePath: string, timeoutArgument?: number): Promise<string> {
+  const child = spawnHelper('lock-probe.ts', [
+    statePath,
+    ...(timeoutArgument === undefined ? [] : [String(timeoutArgument)])
+  ]);
+  const stdout = child.stdout;
+  assert.ok(stdout !== null);
+  stdout.setEncoding('utf8');
+  let output = '';
+  stdout.on('data', (chunk: string) => { output += chunk; });
+  let timeout: NodeJS.Timeout | undefined;
+  const outcome = await Promise.race([
+    once(child, 'exit').then(([code]) => ({ type: 'exit' as const, code })),
+    new Promise<{ type: 'timeout'; code: null }>((resolve) => {
+      timeout = setTimeout(() => resolve({ type: 'timeout', code: null }), 1_000);
+    })
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  if (outcome.type === 'timeout') {
+    child.kill('SIGKILL');
+    await once(child, 'exit');
+    assert.fail('lock probe did not finish within one second');
+  }
+  assert.equal(outcome.code, 0);
+  return output;
 }
 
 test('returns null when the state file has not been created', async () => {
@@ -221,5 +279,34 @@ test('recovers a run lock left behind by a dead owner process', async () => {
 
     const recoveredStore = new FileRunStateStore(statePath);
     assert.equal(await recoveredStore.withRunLock(async () => 'recovered'), 'recovered');
+  });
+});
+
+for (const mainLockAction of ['remove', 'keep'] as const) {
+  test(`recovers when a recovery owner dies after the main lock is ${mainLockAction === 'remove' ? 'removed' : 'left in place'}`, async () => {
+    await withTempDir(async (directory) => {
+      const statePath = path.join(directory, 'state.json');
+      await leaveDeadMainLock(statePath);
+      await killAfterOutput(
+        spawnHelper('recovery-gate-holder.ts', [statePath, mainLockAction]),
+        'recovery-gate-ready'
+      );
+
+      assert.match(await runProbe(statePath), /entered/);
+    });
+  });
+}
+
+test('checks the acquisition deadline even while a live recovery gate blocks progress', async () => {
+  await withTempDir(async (directory) => {
+    const statePath = path.join(directory, 'state.json');
+    const recoveryHolder = spawnHelper('recovery-gate-holder.ts', [statePath, 'keep']);
+    await waitForOutput(recoveryHolder, 'recovery-gate-ready');
+    try {
+      assert.match(await runProbe(statePath, 25), /timed-out/);
+    } finally {
+      recoveryHolder.kill('SIGKILL');
+      await once(recoveryHolder, 'exit');
+    }
   });
 });

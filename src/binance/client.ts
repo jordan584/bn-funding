@@ -157,7 +157,10 @@ export class BinanceClient {
         if (response.ok) {
           try {
             return await response.json();
-          } catch {
+          } catch (error) {
+            if (signal.aborted || (error instanceof Error && error.name === 'TimeoutError')) {
+              throw error;
+            }
             throw new BinanceRequestError('Binance response was not valid JSON');
           }
         }
