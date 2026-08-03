@@ -6,3 +6,4 @@ dist/
 .superpowers/
 data/*.tmp
 coverage/
+.worktrees/
