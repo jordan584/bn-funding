@@ -24,6 +24,22 @@ test('daemon configuration is production-safe', () => {
 });
 
 for (const mode of ['daemon', 'send'] as const) {
+  test(`${mode} rejects a missing state file`, () => {
+    assert.throws(
+      () => loadConfig({
+        GOOGLE_CHAT_WEBHOOK_URL: validDaemonEnv.GOOGLE_CHAT_WEBHOOK_URL
+      }, mode),
+      /STATE_FILE/
+    );
+  });
+
+  test(`${mode} rejects a relative state file`, () => {
+    assert.throws(
+      () => loadConfig({ ...validDaemonEnv, STATE_FILE: 'data/state.json' }, mode),
+      /STATE_FILE must be an absolute path/
+    );
+  });
+
   test(`${mode} rejects a missing Google Chat Webhook`, () => {
     assert.throws(
       () => loadConfig({ STATE_FILE: '/var/lib/bn-funding/state.json' }, mode),

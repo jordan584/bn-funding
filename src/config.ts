@@ -38,6 +38,9 @@ export function loadConfig(env: NodeJS.ProcessEnv, mode: RunMode): AppConfig {
   if (needsDeliveryConfig && !stateFile) {
     throw new Error('STATE_FILE is required in daemon and send modes');
   }
+  if (needsDeliveryConfig && stateFile !== undefined && !path.isAbsolute(stateFile)) {
+    throw new Error('STATE_FILE must be an absolute path in daemon and send modes');
+  }
 
   if (needsDeliveryConfig && !webhookValue) {
     throw new Error('GOOGLE_CHAT_WEBHOOK_URL is required in daemon and send modes');

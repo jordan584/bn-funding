@@ -80,6 +80,12 @@ export function buildFundingLeaderboard(input: BuildFundingLeaderboardInput): Fu
     sumsBySymbol.set(record.symbol, sums);
   }
 
+  for (const contract of eligibleContracts) {
+    if (sumsBySymbol.has(contract.symbol) && !premiumBySymbol.has(contract.symbol)) {
+      throw new Error(`Missing current premium index for ${contract.symbol}`);
+    }
+  }
+
   const rows: FundingRow[] = [];
   for (const contract of eligibleContracts) {
     const currentRate = currentRateBySymbol.get(contract.symbol);

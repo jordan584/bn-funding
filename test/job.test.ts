@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { createApp } from '../src/app.js';
-import type { BinanceClient } from '../src/binance/client.js';
-import { GoogleChatClient } from '../src/chat/client.js';
+import { type BinanceClient } from '../src/binance/client.js';
+import {
+  GoogleChatClient,
+  GoogleChatRequestError,
+  GoogleChatTimeoutError
+} from '../src/chat/client.js';
 import { parseCliArgs } from '../src/cli.js';
 import type { Logger, ScheduledSlot } from '../src/domain.js';
 import { runFundingJob } from '../src/job.js';
@@ -44,6 +51,7 @@ function dependencies(lastSuccessfulSlot: string | null = null) {
     send: async () => { calls.push('chat.send'); }
   } as unknown as GoogleChatClient;
   const state = {
+    withRunLock: async <T>(work: () => Promise<T>) => work(),
     getLastSuccessfulSlot: async () => { calls.push('state.read'); return lastSuccessfulSlot; },
     markSuccessful: async () => { calls.push('state.write'); }
   } as unknown as FileRunStateStore;
@@ -51,7 +59,7 @@ function dependencies(lastSuccessfulSlot: string | null = null) {
   const logger: Logger = {
     info: (event, fields) => { logs.push({ event, ...(fields === undefined ? {} : { fields }) }); },
     warn: () => {},
-    error: () => {}
+    error: (event, fields) => { logs.push({ event, ...(fields === undefined ? {} : { fields }) }); }
   };
   return { deps: { binance, chat, state, now: () => AS_OF + 10, logger }, calls, logs };
 }
@@ -100,7 +108,12 @@ test('dry-run fetches and formats the real Top20 without reading or writing stat
   assert.equal(logs[0]!.fields?.eligibleContractCount, 20);
   assert.equal(logs[0]!.fields?.historyRecordCount, 40);
   assert.equal(logs[0]!.fields?.historyPageCount, 1);
+  assert.equal(logs[0]!.fields?.asOf, AS_OF);
   assert.equal(typeof logs[0]!.fields?.durationMs, 'number');
+  assert.equal(typeof logs[0]!.fields?.dataFetchDurationMs, 'number');
+  assert.equal(typeof logs[0]!.fields?.computeDurationMs, 'number');
+  assert.equal(typeof logs[0]!.fields?.cardBuildDurationMs, 'number');
+  assert.equal(logs[0]!.fields?.webhookDurationMs, 0);
   assert.equal(typeof logs[0]!.fields?.payloadBytes, 'number');
 });
 
@@ -130,10 +143,75 @@ test('sends once then records a successful slot and logs operational metadata', 
   assert.equal(completed?.fields?.slot, slot.key);
   assert.equal(completed?.fields?.status, 'sent');
   assert.equal(completed?.fields?.rowCount, 20);
+  assert.equal(completed?.fields?.asOf, AS_OF);
   assert.equal(typeof completed?.fields?.durationMs, 'number');
+  assert.equal(typeof completed?.fields?.dataFetchDurationMs, 'number');
+  assert.equal(typeof completed?.fields?.computeDurationMs, 'number');
+  assert.equal(typeof completed?.fields?.cardBuildDurationMs, 'number');
+  assert.equal(typeof completed?.fields?.webhookDurationMs, 'number');
   assert.equal(typeof completed?.fields?.payloadBytes, 'number');
   assert.equal(completed?.fields?.eligibleContractCount, 20);
   assert.equal(completed?.fields?.historyRecordCount, 40);
+});
+
+test('serializes two independent jobs across the complete duplicate-check and send transaction', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'bn-funding-job-lock-'));
+  t.after(async () => { await rm(directory, { recursive: true, force: true }); });
+  const statePath = path.join(directory, 'state.json');
+  const data = jobData();
+  let webhookPosts = 0;
+  let releaseFirstPost: (() => void) | undefined;
+  const holdFirstPost = new Promise<void>((resolve) => { releaseFirstPost = resolve; });
+  let markFirstPostStarted: (() => void) | undefined;
+  const firstPostStarted = new Promise<void>((resolve) => { markFirstPostStarted = resolve; });
+
+  const makeDeps = () => ({
+    binance: {
+      getServerTime: async () => AS_OF,
+      getExchangeSymbols: async () => data.contracts,
+      getFundingHistory: async () => ({ records: data.history, pageCount: 1 }),
+      getPremiumIndexes: async () => data.premiums,
+      getFundingIntervals: async () => data.intervals
+    } as unknown as BinanceClient,
+    chat: {
+      send: async () => {
+        webhookPosts += 1;
+        if (webhookPosts === 1) {
+          markFirstPostStarted?.();
+          await holdFirstPost;
+        }
+      }
+    } as unknown as GoogleChatClient,
+    state: new FileRunStateStore(statePath),
+    now: () => AS_OF + 10,
+    logger: { info: () => {}, warn: () => {}, error: () => {} } satisfies Logger
+  });
+
+  const firstJob = runFundingJob(makeDeps(), {
+    slot,
+    trigger: 'cron',
+    dryRun: false,
+    force: false
+  });
+  await firstPostStarted;
+  const secondJob = runFundingJob(makeDeps(), {
+    slot,
+    trigger: 'manual',
+    dryRun: false,
+    force: false
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const postsWhileFirstWasHeld = webhookPosts;
+
+  releaseFirstPost?.();
+  const [firstResult, secondResult] = await Promise.all([firstJob, secondJob]);
+
+  assert.equal(postsWhileFirstWasHeld, 1);
+  assert.deepEqual(firstResult, { status: 'sent', slot: slot.key, rowCount: 20 });
+  assert.deepEqual(secondResult, { status: 'skipped', slot: slot.key, reason: 'already-sent' });
+  assert.equal(webhookPosts, 1);
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).lastSuccessfulSlot, slot.key);
 });
 
 test('force bypasses only the duplicate check and still sends a validated run', async () => {
@@ -156,42 +234,42 @@ test('force bypasses only the duplicate check and still sends a validated run', 
   assert.equal(calls.includes('state.write'), true);
 });
 
-for (const [name, change] of [
-  ['Binance schema failure', (deps: ReturnType<typeof dependencies>['deps']) => {
+for (const [name, expectedStage, expectedCategory, expectedAsOf, change] of [
+  ['Binance schema failure', 'data-fetch', 'binance-request', null, (deps: ReturnType<typeof dependencies>['deps']) => {
     (deps.binance as unknown as { getServerTime(): Promise<number> }).getServerTime = async () => {
       throw new Error('Binance response validation failed');
     };
   }],
-  ['Binance retry failure', (deps: ReturnType<typeof dependencies>['deps']) => {
+  ['Binance retry failure', 'data-fetch', 'binance-request', null, (deps: ReturnType<typeof dependencies>['deps']) => {
     (deps.binance as unknown as { getServerTime(): Promise<number> }).getServerTime = async () => {
       throw new Error('Binance network request failed');
     };
   }],
-  ['Binance pagination failure', (deps: ReturnType<typeof dependencies>['deps']) => {
+  ['Binance pagination failure', 'data-fetch', 'binance-request', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
     (deps.binance as unknown as { getFundingHistory(start: number, end: number): Promise<unknown> }).getFundingHistory = async () => {
       throw new Error('Funding history pagination stalled');
     };
   }],
-  ['fewer than 20 valid rows', (deps: ReturnType<typeof dependencies>['deps']) => {
+  ['fewer than 20 valid rows', 'compute', 'funding-compute', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
     (deps.binance as unknown as { getExchangeSymbols(): Promise<unknown[]> }).getExchangeSymbols = async () => jobData().contracts.slice(0, 19);
   }],
-  ['an at-limit Chat payload', (deps: ReturnType<typeof dependencies>['deps']) => {
+  ['an at-limit Chat payload', 'card-build', 'chat-payload', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
     (deps.binance as unknown as { getExchangeSymbols(): Promise<unknown[]> }).getExchangeSymbols = async () =>
       jobData().contracts.map((item) => ({ ...item, baseAsset: '币'.repeat(2_000) }));
   }],
-  ['an explicit Google Chat non-2xx failure', (deps: ReturnType<typeof dependencies>['deps']) => {
+  ['an explicit Google Chat non-2xx failure', 'webhook', 'google-chat-request', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
     (deps.chat as unknown as { send(): Promise<void> }).send = async () => {
-      throw new Error('Google Chat request failed: POST returned 500');
+      throw new GoogleChatRequestError('Google Chat request failed: POST returned 500', 500);
     };
   }],
-  ['an ambiguous Google Chat timeout', (deps: ReturnType<typeof dependencies>['deps']) => {
+  ['an ambiguous Google Chat timeout', 'webhook', 'google-chat-timeout', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
     (deps.chat as unknown as { send(): Promise<void> }).send = async () => {
-      throw new Error('Google Chat request timed out; delivery status is ambiguous');
+      throw new GoogleChatTimeoutError();
     };
   }]
 ] as const) {
   test(`${name} does not record the slot as successful`, async () => {
-    const { deps, calls } = dependencies(slot.key);
+    const { deps, calls, logs } = dependencies(slot.key);
     change(deps);
 
     await assert.rejects(runFundingJob(deps, {
@@ -202,8 +280,39 @@ for (const [name, change] of [
     }));
 
     assert.equal(calls.includes('state.write'), false);
+    const failures = logs.filter((entry) => entry.event === 'funding_job.failed');
+    assert.equal(failures.length, 1);
+    assert.deepEqual(failures[0]!.fields, {
+      slot: slot.key,
+      trigger: 'manual',
+      stage: expectedStage,
+      errorCategory: expectedCategory,
+      asOf: expectedAsOf,
+      durationMs: failures[0]!.fields?.durationMs
+    });
+    assert.equal(typeof failures[0]!.fields?.durationMs, 'number');
   });
 }
+
+test('failure observability omits webhook secrets and large response bodies', async () => {
+  const { deps, logs } = dependencies();
+  const webhook = 'https://chat.googleapis.com/v1/spaces/space/messages?key=secret-key&token=secret-token';
+  (deps.chat as unknown as { send(): Promise<void> }).send = async () => {
+    throw new GoogleChatRequestError(`upstream echoed ${webhook}: ${'x'.repeat(5_000)}`, 500);
+  };
+
+  await assert.rejects(runFundingJob(deps, {
+    slot,
+    trigger: 'manual',
+    dryRun: false,
+    force: true
+  }), GoogleChatRequestError);
+
+  const failures = logs.filter((entry) => entry.event === 'funding_job.failed');
+  assert.equal(failures.length, 1);
+  const serialized = JSON.stringify(failures);
+  assert.doesNotMatch(serialized, /chat\.googleapis\.com|secret-key|secret-token|x{100}/);
+});
 
 test('createApp assembles the configured concrete dependencies', () => {
   const app = createApp({

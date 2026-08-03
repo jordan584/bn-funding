@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { BinanceClient, BinanceRequestError } from '../../src/binance/client.js';
+import {
+  BinanceClient,
+  BinanceRequestError,
+  BinanceTimeoutError
+} from '../../src/binance/client.js';
 import { jsonResponse, queuedFetch, type SeenRequest } from '../helpers/fetch.js';
 
 const baseUrl = new URL('https://fapi.binance.com');
@@ -198,24 +202,38 @@ test('caps an oversized maxRetries override at three retries', async () => {
   assert.deepEqual(sleeps, [500, 1_000, 2_000]);
 });
 
-test('turns an abort timeout into a typed request error with a bounded response-body message', async () => {
-  const body = 'x'.repeat(600);
+test('retries three Binance timeouts before throwing a typed timeout error', async () => {
+  const seenRequests: SeenRequest[] = [];
+  const sleeps: number[] = [];
   const client = new BinanceClient({
     baseUrl,
     timeoutMs: 1,
-    fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+    fetch: async (input, init) => new Promise<Response>((_resolve, reject) => {
+      seenRequests.push({
+        url: new URL(typeof input === 'string' || input instanceof URL ? input : input.url),
+        ...(init === undefined ? {} : { init })
+      });
+      const keepEventLoopAlive = setTimeout(() => {}, 1_000);
+      init?.signal?.addEventListener('abort', () => {
+        clearTimeout(keepEventLoopAlive);
+        reject(init.signal?.reason);
+      }, { once: true });
     }),
-    sleep: async () => { throw new Error('must not sleep'); }
+    sleep: async (ms) => { sleeps.push(ms); },
+    random: () => 0
   });
 
   await assert.rejects(client.getServerTime(), (error: unknown) => {
-    assert.ok(error instanceof BinanceRequestError);
+    assert.ok(error instanceof BinanceTimeoutError);
     assert.match(error.message, /timed out/);
-    assert.doesNotMatch(error.message, /x/);
     return true;
   });
+  assert.equal(seenRequests.length, 4);
+  assert.deepEqual(sleeps, [500, 1_000, 2_000]);
+});
 
+test('bounds a Binance HTTP error response body at 500 characters', async () => {
+  const body = 'x'.repeat(600);
   const bodyClient = new BinanceClient({
     baseUrl,
     fetch: queuedFetch([new Response(body, { status: 400 })], [])

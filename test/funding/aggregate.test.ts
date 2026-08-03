@@ -91,6 +91,20 @@ test('ranks 22 assets by 24h funding, current rate, then symbol and retains nega
   assert.equal(leaderboard.rows.every((row, index, rows) => index === 0 || rows[index - 1]!.funding24h.gte(row.funding24h)), true);
 });
 
+test('fails closed when the highest-24h eligible contract with settled history lacks current premium', () => {
+  const rankedSymbols = ['MISSINGUSDT', ...symbols];
+
+  assert.throws(() => buildFundingLeaderboard({
+    asOf: AS_OF,
+    contracts: rankedSymbols.map((symbol) => contract(symbol)),
+    history: rankedSymbols.map((symbol, index) =>
+      history(symbol, index === 0 ? '0.100000' : '0.000100', AS_OF - HOUR)
+    ),
+    premiumIndexes: symbols.map((symbol) => premium(symbol)),
+    intervals: []
+  }), /Missing current premium index for MISSINGUSDT/);
+});
+
 test('rejects incomplete, non-finite, and non-positive-rate leaderboard inputs', () => {
   const nineteen = Array.from({ length: 19 }, (_, index) => `N${String(index).padStart(2, '0')}USDT`);
   assert.throws(() => buildFundingLeaderboard({

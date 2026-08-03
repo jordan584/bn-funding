@@ -42,6 +42,13 @@ export class BinanceRequestError extends Error {
   }
 }
 
+export class BinanceTimeoutError extends BinanceRequestError {
+  constructor(path: string) {
+    super(`Binance request timed out: GET ${path}`);
+    this.name = 'BinanceTimeoutError';
+  }
+}
+
 export class BinanceClient {
   private readonly baseUrl: URL;
   private readonly fetcher: typeof globalThis.fetch;
@@ -164,8 +171,13 @@ export class BinanceClient {
         if (error instanceof BinanceRequestError) {
           throw error;
         }
-        if (signal.aborted) {
-          throw new BinanceRequestError(`Binance request timed out: GET ${path}`);
+        const timedOut = signal.aborted || (error instanceof Error && error.name === 'TimeoutError');
+        if (timedOut) {
+          if (retryIndex >= this.maxRetries) {
+            throw new BinanceTimeoutError(path);
+          }
+          await this.sleep(this.retryDelayMs(undefined, retryIndex));
+          continue;
         }
         if (retryIndex >= this.maxRetries) {
           throw new BinanceRequestError(`Binance network request failed: GET ${path}`);

@@ -156,3 +156,17 @@ test('rejects an oversized message instead of truncating text or dropping rows',
     message: 'Google Chat message exceeds 32000 bytes'
   });
 });
+
+test('accepts 31999 UTF-8 bytes and rejects exactly 32000 UTF-8 bytes', () => {
+  const rowsWithAssetLength = (assetLength: number) => [
+    row(1, { asset: 'A'.repeat(assetLength) }),
+    ...Array.from({ length: 19 }, (_, index) => row(index + 2))
+  ];
+  const accepted = buildFundingChatMessage(leaderboard(rowsWithAssetLength(21_347)));
+
+  assert.equal(Buffer.byteLength(JSON.stringify(accepted), 'utf8'), 31_999);
+  assert.throws(
+    () => buildFundingChatMessage(leaderboard(rowsWithAssetLength(21_348))),
+    { message: 'Google Chat message exceeds 32000 bytes' }
+  );
+});

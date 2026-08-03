@@ -45,7 +45,9 @@ interactive first setup, enter it without echoing it to the terminal and start
 PM2 from the same shell:
 
 ```bash
-read -rs 'GOOGLE_CHAT_WEBHOOK_URL?Google Chat Webhook: '; echo
+printf '%s' 'Google Chat Webhook: ' >&2
+IFS= read -r -s GOOGLE_CHAT_WEBHOOK_URL
+printf '\n' >&2
 export GOOGLE_CHAT_WEBHOOK_URL
 export STATE_FILE=/var/lib/bn-funding/state.json
 export TZ=Asia/Shanghai

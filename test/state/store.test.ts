@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import type { StateFsAdapter } from '../../src/state/store.js';
@@ -146,5 +149,77 @@ test('removes only its temporary state file when writing the replacement fails',
 
     assert.equal((await readdir(path.dirname(statePath))).length, 0);
     assert.notEqual(temporaryFile, '');
+  });
+});
+
+test('serializes work across two independent stores that share a state path', async () => {
+  await withTempDir(async (directory) => {
+    const statePath = path.join(directory, 'state.json');
+    const firstStore = new FileRunStateStore(statePath);
+    const secondStore = new FileRunStateStore(statePath);
+    const order: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstEntered: (() => void) | undefined;
+    const firstIsHoldingLock = new Promise<void>((resolve) => { firstEntered = resolve; });
+
+    const first = firstStore.withRunLock(async () => {
+      order.push('first-enter');
+      firstEntered?.();
+      await holdFirst;
+      order.push('first-exit');
+      return 'first';
+    });
+    await firstIsHoldingLock;
+
+    const second = secondStore.withRunLock(async () => {
+      order.push('second-enter');
+      return 'second';
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(order, ['first-enter']);
+
+    releaseFirst?.();
+    assert.deepEqual(await Promise.all([first, second]), ['first', 'second']);
+    assert.deepEqual(order, ['first-enter', 'first-exit', 'second-enter']);
+  });
+});
+
+test('releases the run lock when protected work throws', async () => {
+  await withTempDir(async (directory) => {
+    const statePath = path.join(directory, 'state.json');
+    const firstStore = new FileRunStateStore(statePath);
+    const secondStore = new FileRunStateStore(statePath);
+
+    await assert.rejects(
+      firstStore.withRunLock(async () => { throw new Error('job failed'); }),
+      /job failed/
+    );
+    assert.equal(await secondStore.withRunLock(async () => 'reacquired'), 'reacquired');
+  });
+});
+
+test('recovers a run lock left behind by a dead owner process', async () => {
+  await withTempDir(async (directory) => {
+    const statePath = path.join(directory, 'state.json');
+    const helper = fileURLToPath(new URL('../helpers/lock-holder.ts', import.meta.url));
+    const child = spawn(process.execPath, ['--import', 'tsx', helper, statePath], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'inherit']
+    });
+    child.stdout.setEncoding('utf8');
+    await new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.stdout.once('data', (chunk: string) => {
+        if (chunk.includes('locked')) resolve();
+        else reject(new Error(`Unexpected lock-holder output: ${chunk}`));
+      });
+    });
+
+    child.kill('SIGKILL');
+    await once(child, 'exit');
+
+    const recoveredStore = new FileRunStateStore(statePath);
+    assert.equal(await recoveredStore.withRunLock(async () => 'recovered'), 'recovered');
   });
 });
