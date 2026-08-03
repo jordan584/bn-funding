@@ -63,6 +63,11 @@ export interface FundingLeaderboard {
   rows: FundingRow[];
 }
 
+export interface GoogleChatMessage {
+  text: string;
+  cardsV2: Array<{ cardId: string; card: Record<string, unknown> }>;
+}
+
 export interface ScheduledSlot {
   key: string;
   scheduledAtMs: number;
