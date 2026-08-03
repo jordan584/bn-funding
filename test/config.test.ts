@@ -78,3 +78,43 @@ test('log emits one JSON line and safely serializes errors', () => {
     retryable: true
   });
 });
+
+test('log redacts Google Chat Webhooks in explicit fields and nested values', () => {
+  const webhook =
+    'https://chat.googleapis.com/v1/spaces/space/messages?key=key-secret&token=token-secret';
+  const originalWrite = process.stdout.write;
+  let output = '';
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    output += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    log('info', 'config.loaded', {
+      GOOGLE_CHAT_WEBHOOK_URL: webhook,
+      googleChatWebhookUrl: new URL(webhook),
+      nested: {
+        config: {
+          destination: webhook,
+          endpoint: new URL(webhook)
+        }
+      }
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  assert.doesNotMatch(output, /chat\.googleapis\.com|key-secret|token-secret/);
+  assert.deepEqual(JSON.parse(output), {
+    level: 'info',
+    event: 'config.loaded',
+    GOOGLE_CHAT_WEBHOOK_URL: '[REDACTED]',
+    googleChatWebhookUrl: '[REDACTED]',
+    nested: {
+      config: {
+        destination: '[REDACTED]',
+        endpoint: '[REDACTED]'
+      }
+    }
+  });
+});
