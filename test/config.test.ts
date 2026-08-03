@@ -118,3 +118,33 @@ test('log redacts Google Chat Webhooks in explicit fields and nested values', ()
     }
   });
 });
+
+test('log redacts Google Chat Webhooks with query or fragment after the hostname', () => {
+  const originalWrite = process.stdout.write;
+  let output = '';
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    output += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    log('info', 'config.loaded', {
+      nested: {
+        queryOnly: 'https://chat.googleapis.com?key=query-secret',
+        fragmentOnly: 'https://chat.googleapis.com#fragment-secret'
+      }
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  assert.doesNotMatch(output, /chat\.googleapis\.com|query-secret|fragment-secret/);
+  assert.deepEqual(JSON.parse(output), {
+    level: 'info',
+    event: 'config.loaded',
+    nested: {
+      queryOnly: '[REDACTED]',
+      fragmentOnly: '[REDACTED]'
+    }
+  });
+});

@@ -6,7 +6,7 @@ const SENSITIVE_FIELD_NAMES = new Set([
   'googlechatwebhookurl'
 ]);
 const GOOGLE_CHAT_WEBHOOK_PATTERN =
-  /https?:\/\/chat\.googleapis\.com(?:\/[^\s"']*)?/giu;
+  /https?:\/\/chat\.googleapis\.com(?:[\/?#][^\s"']*)?/giu;
 
 function redactGoogleChatWebhooks(value: string): string {
   return value.replace(GOOGLE_CHAT_WEBHOOK_PATTERN, REDACTED);
