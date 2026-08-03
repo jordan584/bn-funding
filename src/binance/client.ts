@@ -17,6 +17,14 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_HISTORY_PAGE_LIMIT = 1000;
 const MAX_ERROR_BODY_LENGTH = 500;
 
+function normalizeMaxRetries(value: number | undefined): number {
+  const requested = value ?? DEFAULT_MAX_RETRIES;
+  if (!Number.isFinite(requested)) {
+    return DEFAULT_MAX_RETRIES;
+  }
+  return Math.min(Math.max(Math.trunc(requested), 0), DEFAULT_MAX_RETRIES);
+}
+
 export interface BinanceClientOptions {
   baseUrl: URL;
   fetch?: typeof globalThis.fetch;
@@ -47,7 +55,7 @@ export class BinanceClient {
     this.baseUrl = options.baseUrl;
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.maxRetries = normalizeMaxRetries(options.maxRetries);
     this.historyPageLimit = options.historyPageLimit ?? DEFAULT_HISTORY_PAGE_LIMIT;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.random = options.random ?? Math.random;

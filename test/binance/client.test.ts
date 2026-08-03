@@ -179,6 +179,25 @@ test('stops after three retryable failures with four total attempts', async () =
   assert.deepEqual(sleeps, [500, 1_000, 2_000]);
 });
 
+test('caps an oversized maxRetries override at three retries', async () => {
+  const seenRequests: SeenRequest[] = [];
+  const sleeps: number[] = [];
+  const client = new BinanceClient({
+    baseUrl,
+    maxRetries: 4,
+    fetch: queuedFetch([
+      new Error('network one'), new Error('network two'), new Error('network three'),
+      new Error('network four'), new Error('network five')
+    ], seenRequests),
+    sleep: async (ms) => { sleeps.push(ms); },
+    random: () => 0
+  });
+
+  await assert.rejects(client.getServerTime(), BinanceRequestError);
+  assert.equal(seenRequests.length, 4);
+  assert.deepEqual(sleeps, [500, 1_000, 2_000]);
+});
+
 test('turns an abort timeout into a typed request error with a bounded response-body message', async () => {
   const body = 'x'.repeat(600);
   const client = new BinanceClient({
