@@ -188,6 +188,56 @@ test('orders by signed composite APR, coverage, then asset and retains negatives
   assert.deepEqual(leaderboard.rows.slice(-2).map((row) => row.asset), ['NEGATIVEA', 'NEGATIVEB']);
 });
 
+test('keeps candidate count while slicing the sorted best twenty candidates', () => {
+  const rankedRates = [
+    '0.00025', '0.00024', '0.00023', '0.00022', '0.00021', '0.00020',
+    '0.00019', '0.00018', '0.00017', '0.00016', '0.00015', '0.00014',
+    '0.00013', '0.00012', '0.00011', '0.00010', '0.00009', '0.00008'
+  ];
+  const rankedMarkets = rankedRates.map((rate, index) =>
+    venueMarket('binance', `RANK${String(index + 1).padStart(2, '0')}`, rate)
+  );
+  const matchingMarkets = rankedRates.map((rate, index) =>
+    venueMarket('okx', `RANK${String(index + 1).padStart(2, '0')}`, rate)
+  );
+  const snapshots = completeSnapshots({
+    binance: [
+      ...rankedMarkets,
+      venueMarket('binance', 'COVERAGE', '0.00007'),
+      venueMarket('binance', 'ALPHA', '0.00007'),
+      venueMarket('binance', 'ZETA', '0.00007'),
+      venueMarket('binance', 'TAILA', '0.00006'),
+      venueMarket('binance', 'TAILB', '0.00005'),
+      venueMarket('binance', 'TAILC', '0.00004'),
+      venueMarket('binance', 'TAILD', '0.00003')
+    ],
+    okx: [
+      ...matchingMarkets,
+      venueMarket('okx', 'COVERAGE', '0.00007'),
+      venueMarket('okx', 'ALPHA', '0.00007'),
+      venueMarket('okx', 'ZETA', '0.00007'),
+      venueMarket('okx', 'TAILA', '0.00006'),
+      venueMarket('okx', 'TAILB', '0.00005'),
+      venueMarket('okx', 'TAILC', '0.00004'),
+      venueMarket('okx', 'TAILD', '0.00003')
+    ],
+    hyperliquid: [venueMarket('hyperliquid', 'COVERAGE', '0.00007')]
+  });
+
+  const leaderboard = buildCompositeFundingLeaderboard({ asOf: AS_OF, snapshots });
+
+  assert.equal(leaderboard.candidateCount, 25);
+  assert.equal(leaderboard.rows.length, 20);
+  assert.deepEqual(leaderboard.rows.map((row) => row.asset), [
+    ...Array.from({ length: 18 }, (_, index) => `RANK${String(index + 1).padStart(2, '0')}`),
+    'COVERAGE',
+    'ALPHA'
+  ]);
+  assert.deepEqual(leaderboard.rows.map((row) => row.rank), Array.from({ length: 20 }, (_, index) => index + 1));
+  assert.equal(leaderboard.rows.some((row) => row.asset === 'ZETA'), false);
+  assert.equal(leaderboard.rows.some((row) => row.asset.startsWith('TAIL')), false);
+});
+
 test('assigns ranks and returns exactly the covered venue metrics with empty seven-day fields', () => {
   const snapshots = completeSnapshots({
     binance: [venueMarket('binance', 'THREE')],
