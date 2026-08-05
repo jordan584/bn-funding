@@ -12,8 +12,10 @@ export const okxInstrumentSchema = z.object({
   baseCcy: z.string(),
   quoteCcy: z.string(),
   settleCcy: z.string(),
+  ctType: z.string(),
   state: z.string(),
-  listTime: z.string()
+  listTime: z.string(),
+  instFamily: z.string()
 });
 
 export const okxCurrentFundingSchema = z.object({

@@ -71,15 +71,20 @@ export class OkxClient implements FundingVenueAdapter {
     const eligibleInstruments = instruments.filter((instrument) => (
       instrument.instType === 'SWAP'
       && instrument.state === 'live'
-      && instrument.quoteCcy === 'USDT'
       && instrument.settleCcy === 'USDT'
+      && instrument.ctType === 'linear'
     ));
+    if (eligibleInstruments.length === 0) {
+      throw new VenueRequestError(this.id, 'No eligible OKX USDT linear swaps');
+    }
     const seenInstrumentIds = new Set<string>();
+    const assetsByInstrumentId = new Map<string, { rawBaseAsset: string; quoteAsset: string }>();
     for (const instrument of eligibleInstruments) {
-      if (instrument.instId === '' || instrument.baseCcy === '' || seenInstrumentIds.has(instrument.instId)) {
+      if (seenInstrumentIds.has(instrument.instId)) {
         throw new VenueRequestError(this.id, `Invalid OKX eligible instrument ${instrument.instId}`);
       }
       seenInstrumentIds.add(instrument.instId);
+      assetsByInstrumentId.set(instrument.instId, deriveMarketAssets(instrument.instId, instrument.instFamily));
     }
 
     const markets = await mapWithConcurrency(
@@ -104,12 +109,13 @@ export class OkxClient implements FundingVenueAdapter {
         if (!Number.isInteger(intervalHours) || intervalHours <= 0) {
           throw new VenueRequestError(this.id, `Invalid OKX funding interval for ${instrument.instId}`);
         }
+        const assets = assetsByInstrumentId.get(instrument.instId)!;
 
         return {
           venue: this.id,
           marketId: instrument.instId,
-          rawBaseAsset: instrument.baseCcy,
-          quoteAsset: instrument.quoteCcy,
+          rawBaseAsset: assets.rawBaseAsset,
+          quoteAsset: assets.quoteAsset,
           settleAsset: instrument.settleCcy,
           nextFundingRate: current.fundingRate,
           intervalHours,
@@ -192,6 +198,23 @@ export class OkxClient implements FundingVenueAdapter {
     }
     return result.data.data;
   }
+}
+
+function deriveMarketAssets(
+  instId: string,
+  instFamily: string
+): { rawBaseAsset: string; quoteAsset: string } {
+  const instrumentMatch = /^([A-Z0-9]+)-(USDT)-SWAP$/.exec(instId);
+  const familyMatch = /^([A-Z0-9]+)-(USDT)$/.exec(instFamily);
+  if (
+    instrumentMatch === null
+    || familyMatch === null
+    || instrumentMatch[1] !== familyMatch[1]
+    || instrumentMatch[2] !== familyMatch[2]
+  ) {
+    throw new VenueRequestError('okx', `Invalid OKX eligible instrument ${instId}`);
+  }
+  return { rawBaseAsset: instrumentMatch[1]!, quoteAsset: instrumentMatch[2]! };
 }
 
 function parseTimestamp(value: string, field: string): number {

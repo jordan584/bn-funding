@@ -17,14 +17,34 @@ const history = (fundingTime: number, realizedRate = '0.0001', instId = 'BTC-USD
   realizedRate,
   fundingTime: String(fundingTime)
 });
+const swap = (
+  instId: string,
+  overrides: Partial<Record<'baseCcy' | 'ctType' | 'instFamily' | 'instType' | 'listTime' | 'quoteCcy' | 'settleCcy' | 'state', string>> = {}
+) => {
+  const match = /^([A-Z0-9]+)-([A-Z0-9]+)-SWAP$/.exec(instId);
+  if (match === null) throw new Error(`Invalid test instrument ${instId}`);
+  return {
+    instId,
+    instType: 'SWAP',
+    baseCcy: '',
+    quoteCcy: '',
+    settleCcy: 'USDT',
+    ctType: 'linear',
+    state: 'live',
+    listTime: String(AS_OF - DAY),
+    instFamily: `${match[1]}-${match[2]}`,
+    ...overrides
+  };
+};
 
-test('keeps live USDT swaps and derives the actual current funding interval', async () => {
+test('keeps protocol-shaped live linear USDT swaps and derives the actual current funding interval', async () => {
   const client = new OkxClient({
     baseUrl,
     fetch: queuedFetch([
       jsonResponse(envelope([
-        { instId: 'BTC-USDT-SWAP', instType: 'SWAP', baseCcy: 'BTC', quoteCcy: 'USDT', settleCcy: 'USDT', state: 'live', listTime: String(AS_OF - DAY) },
-        { instId: 'ETH-USDC-SWAP', instType: 'SWAP', baseCcy: 'ETH', quoteCcy: 'USDC', settleCcy: 'USDC', state: 'live', listTime: String(AS_OF - DAY) }
+        swap('BTC-USDT-SWAP'),
+        swap('ETH-USDC-SWAP', { settleCcy: 'USDC' }),
+        swap('DOGE-USDT-SWAP', { ctType: 'inverse' })
       ])),
       jsonResponse(envelope([{
         instId: 'BTC-USDT-SWAP', fundingRate: '0.0003', fundingTime: String(AS_OF + 2 * HOUR), nextFundingTime: String(AS_OF + 6 * HOUR)
@@ -61,15 +81,59 @@ test('fails the complete snapshot when a live eligible swap has no current fundi
   const client = new OkxClient({
     baseUrl,
     fetch: queuedFetch([
-      jsonResponse(envelope([{
-        instId: 'BTC-USDT-SWAP', instType: 'SWAP', baseCcy: 'BTC', quoteCcy: 'USDT', settleCcy: 'USDT', state: 'live', listTime: String(AS_OF - DAY)
-      }])),
+      jsonResponse(envelope([swap('BTC-USDT-SWAP')])),
       jsonResponse(envelope([]))
     ], []),
     sleep: async () => {}
   });
 
   await assert.rejects(client.getCurrentSnapshot(), /Missing OKX current funding for BTC-USDT-SWAP/);
+});
+
+test('fails the complete snapshot when no live USDT linear swaps are eligible', async () => {
+  const client = new OkxClient({
+    baseUrl,
+    fetch: queuedFetch([jsonResponse(envelope([
+      swap('BTC-USDC-SWAP', { settleCcy: 'USDC' }),
+      swap('DOGE-USDT-SWAP', { ctType: 'inverse' })
+    ]))], []),
+    sleep: async () => {}
+  });
+
+  await assert.rejects(client.getCurrentSnapshot(), /No eligible OKX USDT linear swaps/);
+});
+
+test('fails the complete snapshot when current funding repeats an eligible instrument', async () => {
+  const client = new OkxClient({
+    baseUrl,
+    fetch: queuedFetch([
+      jsonResponse(envelope([swap('BTC-USDT-SWAP')])),
+      jsonResponse(envelope([
+        { instId: 'BTC-USDT-SWAP', fundingRate: '0.0003', fundingTime: String(AS_OF + 2 * HOUR), nextFundingTime: String(AS_OF + 6 * HOUR) },
+        { instId: 'BTC-USDT-SWAP', fundingRate: '0.0004', fundingTime: String(AS_OF + 2 * HOUR), nextFundingTime: String(AS_OF + 6 * HOUR) }
+      ]))
+    ], []),
+    sleep: async () => {}
+  });
+
+  await assert.rejects(client.getCurrentSnapshot(), /Missing OKX current funding for BTC-USDT-SWAP/);
+});
+
+test('fails the complete snapshot for zero and fractional funding intervals', async () => {
+  for (const nextFundingTime of [AS_OF, AS_OF + 90 * 60 * 1_000]) {
+    const client = new OkxClient({
+      baseUrl,
+      fetch: queuedFetch([
+        jsonResponse(envelope([swap('BTC-USDT-SWAP')])),
+        jsonResponse(envelope([{
+          instId: 'BTC-USDT-SWAP', fundingRate: '0.0003', fundingTime: String(AS_OF), nextFundingTime: String(nextFundingTime)
+        }]))
+      ], []),
+      sleep: async () => {}
+    });
+
+    await assert.rejects(client.getCurrentSnapshot(), /Invalid OKX funding interval for BTC-USDT-SWAP/);
+  }
 });
 
 test('uses realized funding history within the exclusive-start window and advances the older cursor', async () => {
@@ -149,9 +213,9 @@ test('bounds current funding requests by concurrency and preserves instrument or
     currentConcurrency: 2,
     fetch: queuedFetch([
       jsonResponse(envelope([
-        { instId: 'BTC-USDT-SWAP', instType: 'SWAP', baseCcy: 'BTC', quoteCcy: 'USDT', settleCcy: 'USDT', state: 'live', listTime: String(AS_OF - DAY) },
-        { instId: 'ETH-USDT-SWAP', instType: 'SWAP', baseCcy: 'ETH', quoteCcy: 'USDT', settleCcy: 'USDT', state: 'live', listTime: String(AS_OF - DAY) },
-        { instId: 'SOL-USDT-SWAP', instType: 'SWAP', baseCcy: 'SOL', quoteCcy: 'USDT', settleCcy: 'USDT', state: 'live', listTime: String(AS_OF - DAY) }
+        swap('BTC-USDT-SWAP'),
+        swap('ETH-USDT-SWAP'),
+        swap('SOL-USDT-SWAP')
       ])),
       currentResponse('BTC-USDT-SWAP', '0.1'),
       currentResponse('ETH-USDT-SWAP', '0.2'),
@@ -161,7 +225,17 @@ test('bounds current funding requests by concurrency and preserves instrument or
   });
 
   const snapshotPromise = client.getCurrentSnapshot();
-  await twoRequestsStarted;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      twoRequestsStarted,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('current funding joins did not reach configured concurrency')), 100);
+      })
+    ]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
   assert.equal(maxCurrentRequests, 2);
   releaseCurrentRequests!();
   const snapshot = await snapshotPromise;
