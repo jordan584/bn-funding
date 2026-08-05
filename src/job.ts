@@ -224,7 +224,11 @@ export async function runFundingJob(
   try {
     const result = options.dryRun
       ? await runTransaction()
-      : await deps.state.withRunLock(runTransaction);
+      : await deps.state.withRunLock(async () => {
+        const transactionResult = await runTransaction();
+        currentStage = 'state-lock';
+        return transactionResult;
+      });
     completedLog(deps.logger, options, startedAtMs, deps.now(), {
       status: result.status,
       asOf: asOf ?? null,

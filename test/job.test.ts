@@ -276,6 +276,41 @@ test('force bypasses only the duplicate check and still runs all venue phases', 
   assert.deepEqual(calls.slice(-2), ['chat.send', 'state.write']);
 });
 
+test('attributes a lock release failure after a successful transaction to state-lock', async () => {
+  const { deps, calls, logs } = dependencies();
+  deps.state.withRunLock = async <T>(work: () => Promise<T>) => {
+    await work();
+    throw new Error('run lock release failed');
+  };
+
+  await assert.rejects(runFundingJob(deps, jobOptions()), /run lock release failed/);
+
+  assert.deepEqual(calls.slice(-2), ['chat.send', 'state.write']);
+  const failure = logs.find((entry) => entry.event === 'funding_job.failed');
+  assert.equal(failure?.fields?.stage, 'state-lock');
+  assert.equal(failure?.fields?.errorCategory, 'state-store');
+});
+
+for (const [name, expectedStage, change] of [
+  ['duplicate state read', 'state-check', (deps: FundingJobDeps) => {
+    deps.state.getLastSuccessfulSlot = async () => { throw new Error('state read failed'); };
+  }],
+  ['successful slot commit', 'state-commit', (deps: FundingJobDeps) => {
+    deps.state.markSuccessful = async () => { throw new Error('state commit failed'); };
+  }]
+] as const) {
+  test(`attributes a direct ${name} failure to ${expectedStage}`, async () => {
+    const { deps, logs } = dependencies();
+    change(deps);
+
+    await assert.rejects(runFundingJob(deps, jobOptions()));
+
+    const failure = logs.find((entry) => entry.event === 'funding_job.failed');
+    assert.equal(failure?.fields?.stage, expectedStage);
+    assert.equal(failure?.fields?.errorCategory, 'state-store');
+  });
+}
+
 type FailureCase = readonly [
   name: string,
   expectedStage: string,
