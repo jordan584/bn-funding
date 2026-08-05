@@ -41,6 +41,24 @@ test('returns one complete live USDT perpetual snapshot with adjusted intervals'
   assert.equal(snapshot.stats.requestCount, 4);
 });
 
+test('defaults an eligible Binance market without an interval override to eight hours', async () => {
+  const adapter = new BinanceVenueAdapter({
+    baseUrl,
+    fetch: queuedFetch([
+      jsonResponse({ serverTime: AS_OF }),
+      jsonResponse({ symbols: [{
+        symbol: 'ETHUSDT', baseAsset: 'ETH', quoteAsset: 'USDT', contractType: 'PERPETUAL', status: 'TRADING', onboardDate: AS_OF - DAY
+      }] }),
+      jsonResponse([{ symbol: 'ETHUSDT', lastFundingRate: '0.0001', nextFundingTime: AS_OF + 8 * HOUR }]),
+      jsonResponse([])
+    ], [])
+  });
+
+  const snapshot = await adapter.getCurrentSnapshot();
+
+  assert.equal(snapshot.markets[0]?.intervalHours, 8);
+});
+
 test('fails the whole Binance snapshot when an eligible contract lacks current funding', async () => {
   const adapter = new BinanceVenueAdapter({
     baseUrl,
