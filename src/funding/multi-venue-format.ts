@@ -6,7 +6,14 @@ import type {
   CompositeVenueFundingMetric,
   VenueId
 } from '../domain.js';
-import { formatAprPercent, formatFundingPercent } from './format.js';
+
+function formatFundingPercent(rate: Decimal): string {
+  return `${rate.times(100).toFixed(4, Decimal.ROUND_HALF_UP)}%`;
+}
+
+function formatAprPercent(apr: Decimal): string {
+  return `${apr.times(100).toFixed(2, Decimal.ROUND_HALF_UP)}%`;
+}
 
 export const VENUE_LABELS: Record<VenueId, string> = {
   binance: 'Bn',

@@ -7,46 +7,97 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createApp } from '../src/app.js';
-import { type BinanceClient } from '../src/binance/client.js';
 import {
   GoogleChatClient,
   GoogleChatRequestError,
   GoogleChatTimeoutError
 } from '../src/chat/client.js';
 import { parseCliArgs } from '../src/cli.js';
-import type { Logger, ScheduledSlot } from '../src/domain.js';
-import { runFundingJob } from '../src/job.js';
+import {
+  VENUE_IDS,
+  type FundingVenueAdapter,
+  type Logger,
+  type ScheduledSlot,
+  type VenueFundingSnapshot,
+  type VenueHistoryRequest,
+  type VenueId,
+  type VenueSnapshot
+} from '../src/domain.js';
+import { VenueRequestError, VenueTimeoutError } from '../src/exchanges/http.js';
+import { runFundingJob, type FundingJobDeps } from '../src/job.js';
 import { FileRunStateStore } from '../src/state/store.js';
-import { AS_OF, DAY, contract, history, interval, premium } from './helpers/fixtures.js';
+import { AS_OF, DAY } from './helpers/fixtures.js';
 
+const HOUR = 60 * 60 * 1_000;
+const JOB_AS_OF = AS_OF + 10;
 const slot: ScheduledSlot = { key: '2026-08-03T16', scheduledAtMs: AS_OF };
 
-function jobData() {
-  const symbols = Array.from({ length: 20 }, (_, index) => `ASSET${String(index + 1).padStart(2, '0')}USDT`);
+interface FakeOptions {
+  candidateCount?: number;
+  assetLength?: number;
+}
+
+function assetName(index: number, length?: number): string {
+  const suffix = String(index + 1).padStart(2, '0');
+  return length === undefined ? `ASSET${suffix}` : `${'A'.repeat(length)}${suffix}`;
+}
+
+function market(venue: VenueId, index: number, options: FakeOptions): VenueFundingSnapshot {
+  const asset = assetName(index, options.assetLength);
   return {
-    contracts: symbols.map((symbol) => contract(symbol)),
-    history: symbols.flatMap((symbol) => [
-      history(symbol, '0.00010000', AS_OF - DAY + 1),
-      history(symbol, '0.00010000', AS_OF - 1)
-    ]),
-    premiums: symbols.map((symbol) => premium(symbol)),
-    intervals: symbols.map((symbol) => interval(symbol, 8))
+    venue,
+    marketId: `${venue}-${asset}-PERP`,
+    rawBaseAsset: asset,
+    quoteAsset: venue === 'hyperliquid' ? 'USD' : 'USDT',
+    settleAsset: venue === 'hyperliquid' ? 'USDC' : 'USDT',
+    nextFundingRate: String(0.001 - index * 0.00001),
+    intervalHours: 8,
+    nextFundingTime: AS_OF + HOUR
   };
 }
 
-function dependencies(lastSuccessfulSlot: string | null = null) {
+function snapshot(venue: VenueId, options: FakeOptions): VenueSnapshot {
+  const venueIndex = VENUE_IDS.indexOf(venue);
+  const markets = Array.from(
+    { length: options.candidateCount ?? 25 },
+    (_, index) => market(venue, index, options)
+  );
+  return {
+    venue,
+    observedAt: AS_OF,
+    markets,
+    stats: {
+      marketCount: markets.length,
+      requestCount: venueIndex + 1,
+      pageCount: venueIndex
+    }
+  };
+}
+
+function dependencies(lastSuccessfulSlot: string | null = null, options: FakeOptions = {}) {
   const calls: string[] = [];
-  const data = jobData();
-  const binance = {
-    getServerTime: async () => { calls.push('binance.time'); return AS_OF; },
-    getExchangeSymbols: async () => { calls.push('binance.exchange'); return data.contracts; },
-    getFundingHistory: async (startTime: number, endTime: number) => {
-      calls.push(`binance.history:${startTime}:${endTime}`);
-      return { records: data.history, pageCount: 1 };
+  const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+  const venues = Object.fromEntries(VENUE_IDS.map((venue) => [venue, {
+    id: venue,
+    getCurrentSnapshot: async () => {
+      calls.push(`${venue}.current`);
+      return snapshot(venue, options);
     },
-    getPremiumIndexes: async () => { calls.push('binance.premium'); return data.premiums; },
-    getFundingIntervals: async () => { calls.push('binance.intervals'); return data.intervals; }
-  } as unknown as BinanceClient;
+    getFundingHistory: async (request: VenueHistoryRequest) => {
+      calls.push(`${venue}.history:${request.market.marketId}`);
+      return {
+        records: [{
+          venue,
+          marketId: request.market.marketId,
+          fundingRate: '0.0001',
+          fundingTime: request.endTime - DAY
+        }],
+        requestCount: 1,
+        pageCount: 1,
+        completeFrom: request.startTime
+      };
+    }
+  } satisfies FundingVenueAdapter])) as Record<VenueId, FundingVenueAdapter>;
   const chat = {
     send: async () => { calls.push('chat.send'); }
   } as unknown as GoogleChatClient;
@@ -55,151 +106,150 @@ function dependencies(lastSuccessfulSlot: string | null = null) {
     getLastSuccessfulSlot: async () => { calls.push('state.read'); return lastSuccessfulSlot; },
     markSuccessful: async () => { calls.push('state.write'); }
   } as unknown as FileRunStateStore;
-  const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
   const logger: Logger = {
     info: (event, fields) => { logs.push({ event, ...(fields === undefined ? {} : { fields }) }); },
     warn: () => {},
     error: (event, fields) => { logs.push({ event, ...(fields === undefined ? {} : { fields }) }); }
   };
-  return { deps: { binance, chat, state, now: () => AS_OF + 10, logger }, calls, logs };
+  const deps: FundingJobDeps = { venues, chat, state, now: () => JOB_AS_OF, logger };
+  return { deps, calls, logs };
 }
 
-test('skips an already successful slot before touching Binance or Google Chat', async () => {
+function jobOptions(overrides: Partial<Parameters<typeof runFundingJob>[1]> = {}) {
+  return {
+    slot,
+    trigger: 'manual' as const,
+    dryRun: false,
+    force: false,
+    ...overrides
+  };
+}
+
+test('skips an already successful slot before touching any venue or Google Chat', async () => {
   const { deps, calls } = dependencies(slot.key);
 
-  const result = await runFundingJob(deps, {
-    slot,
-    trigger: 'manual',
-    dryRun: false,
-    force: false
-  });
+  const result = await runFundingJob(deps, jobOptions());
 
   assert.deepEqual(result, { status: 'skipped', slot: slot.key, reason: 'already-sent' });
   assert.deepEqual(calls, ['state.read']);
 });
 
-test('dry-run fetches and formats the real Top20 without reading or writing state or sending Chat', async () => {
+test('starts all five current snapshot requests before waiting for any one to resolve', async () => {
+  const { deps } = dependencies();
+  const started = new Set<VenueId>();
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+
+  for (const venue of VENUE_IDS) {
+    const original = deps.venues[venue].getCurrentSnapshot.bind(deps.venues[venue]);
+    deps.venues[venue].getCurrentSnapshot = async () => {
+      started.add(venue);
+      await gate;
+      return original();
+    };
+  }
+
+  const run = runFundingJob(deps, jobOptions({ dryRun: true }));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual([...started].sort(), [...VENUE_IDS].sort());
+  release?.();
+  await run;
+});
+
+test('dry-run fetches all current snapshots and only selected Top20 history without state or Chat', async () => {
   const { deps, calls, logs } = dependencies();
 
-  const result = await runFundingJob(deps, {
-    slot,
-    trigger: 'manual',
-    dryRun: true,
-    force: false
-  });
+  const result = await runFundingJob(deps, jobOptions({ dryRun: true }));
 
   assert.equal(result.status, 'dry-run');
   assert.equal(result.slot, slot.key);
   assert.equal(result.rowCount, 20);
-  assert.match(result.text, /^Binance Funding Top20 \(as of 1785744300000\)\n1\. ASSET01/);
-  assert.deepEqual(calls, [
-    'binance.time',
-    'binance.exchange',
-    `binance.history:${AS_OF - 7 * DAY + 1}:${AS_OF}`,
-    'binance.premium',
-    'binance.intervals'
-  ]);
-  assert.equal(logs.length, 1);
-  assert.equal(logs[0]!.event, 'funding_job.completed');
-  assert.equal(logs[0]!.fields?.trigger, 'manual');
-  assert.equal(logs[0]!.fields?.slot, slot.key);
-  assert.equal(logs[0]!.fields?.status, 'dry-run');
-  assert.equal(logs[0]!.fields?.rowCount, 20);
-  assert.equal(logs[0]!.fields?.eligibleContractCount, 20);
-  assert.equal(logs[0]!.fields?.historyRecordCount, 40);
-  assert.equal(logs[0]!.fields?.historyPageCount, 1);
-  assert.equal(logs[0]!.fields?.asOf, AS_OF);
-  assert.equal(typeof logs[0]!.fields?.durationMs, 'number');
-  assert.equal(typeof logs[0]!.fields?.dataFetchDurationMs, 'number');
-  assert.equal(typeof logs[0]!.fields?.computeDurationMs, 'number');
-  assert.equal(typeof logs[0]!.fields?.cardBuildDurationMs, 'number');
-  assert.equal(logs[0]!.fields?.webhookDurationMs, 0);
-  assert.equal(typeof logs[0]!.fields?.payloadBytes, 'number');
+  assert.match(result.text, new RegExp(`^五交易所 Funding Top20（截至 ${JOB_AS_OF}）\\n#1 ASSET01`));
+  assert.deepEqual(
+    calls.filter((call) => call.endsWith('.current')).sort(),
+    ['binance.current', 'bitget.current', 'bybit.current', 'hyperliquid.current', 'okx.current']
+  );
+  const historyCalls = calls.filter((call) => call.includes('.history:'));
+  assert.equal(historyCalls.length, 100);
+  assert.equal(historyCalls.some((call) => /ASSET2[1-5]/.test(call)), false);
+  assert.equal(calls.some((call) => call.startsWith('state.') || call === 'chat.send'), false);
+  const completed = logs.find((entry) => entry.event === 'funding_job.completed');
+  assert.equal(completed?.fields?.status, 'dry-run');
+  assert.equal(completed?.fields?.rowCount, 20);
 });
 
-test('sends once then records a successful slot and logs operational metadata', async () => {
+test('sends after current-rank-history-card and commits state only after Chat succeeds', async () => {
   const { deps, calls, logs } = dependencies();
 
-  const result = await runFundingJob(deps, {
-    slot,
-    trigger: 'manual',
-    dryRun: false,
-    force: false
-  });
+  const result = await runFundingJob(deps, jobOptions());
 
   assert.deepEqual(result, { status: 'sent', slot: slot.key, rowCount: 20 });
-  assert.deepEqual(calls, [
-    'state.read',
-    'binance.time',
-    'binance.exchange',
-    `binance.history:${AS_OF - 7 * DAY + 1}:${AS_OF}`,
-    'binance.premium',
-    'binance.intervals',
-    'chat.send',
-    'state.write'
-  ]);
+  assert.equal(calls[0], 'state.read');
+  assert.deepEqual(
+    calls.filter((call) => call.endsWith('.current')).sort(),
+    ['binance.current', 'bitget.current', 'bybit.current', 'hyperliquid.current', 'okx.current']
+  );
+  assert.equal(calls.filter((call) => call.includes('.history:')).length, 100);
+  assert.deepEqual(calls.slice(-2), ['chat.send', 'state.write']);
+
   const completed = logs.find((entry) => entry.event === 'funding_job.completed');
   assert.equal(completed?.fields?.trigger, 'manual');
   assert.equal(completed?.fields?.slot, slot.key);
   assert.equal(completed?.fields?.status, 'sent');
+  assert.equal(completed?.fields?.asOf, JOB_AS_OF);
+  assert.equal(completed?.fields?.candidateCount, 25);
   assert.equal(completed?.fields?.rowCount, 20);
-  assert.equal(completed?.fields?.asOf, AS_OF);
-  assert.equal(typeof completed?.fields?.durationMs, 'number');
-  assert.equal(typeof completed?.fields?.dataFetchDurationMs, 'number');
-  assert.equal(typeof completed?.fields?.computeDurationMs, 'number');
-  assert.equal(typeof completed?.fields?.cardBuildDurationMs, 'number');
-  assert.equal(typeof completed?.fields?.webhookDurationMs, 'number');
-  assert.equal(typeof completed?.fields?.payloadBytes, 'number');
-  assert.equal(completed?.fields?.eligibleContractCount, 20);
-  assert.equal(completed?.fields?.historyRecordCount, 40);
+  assert.deepEqual(completed?.fields?.coverageCounts, { two: 0, three: 0, four: 0, five: 20 });
+  for (const field of [
+    'durationMs',
+    'currentFetchDurationMs',
+    'rankDurationMs',
+    'historyFetchDurationMs',
+    'cardBuildDurationMs',
+    'webhookDurationMs',
+    'payloadBytes'
+  ]) {
+    assert.equal(typeof completed?.fields?.[field], 'number', field);
+  }
+  assert.deepEqual(completed?.fields?.venues, {
+    binance: { marketCount: 25, currentRequestCount: 1, currentPageCount: 0, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 },
+    okx: { marketCount: 25, currentRequestCount: 2, currentPageCount: 1, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 },
+    hyperliquid: { marketCount: 25, currentRequestCount: 3, currentPageCount: 2, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 },
+    bybit: { marketCount: 25, currentRequestCount: 4, currentPageCount: 3, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 },
+    bitget: { marketCount: 25, currentRequestCount: 5, currentPageCount: 4, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 }
+  });
 });
 
-test('serializes two independent jobs across the complete duplicate-check and send transaction', async (t) => {
+test('serializes two jobs across the complete duplicate-check-through-send transaction', async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), 'bn-funding-job-lock-'));
   t.after(async () => { await rm(directory, { recursive: true, force: true }); });
   const statePath = path.join(directory, 'state.json');
-  const data = jobData();
   let webhookPosts = 0;
   let releaseFirstPost: (() => void) | undefined;
   const holdFirstPost = new Promise<void>((resolve) => { releaseFirstPost = resolve; });
   let markFirstPostStarted: (() => void) | undefined;
   const firstPostStarted = new Promise<void>((resolve) => { markFirstPostStarted = resolve; });
 
-  const makeDeps = () => ({
-    binance: {
-      getServerTime: async () => AS_OF,
-      getExchangeSymbols: async () => data.contracts,
-      getFundingHistory: async () => ({ records: data.history, pageCount: 1 }),
-      getPremiumIndexes: async () => data.premiums,
-      getFundingIntervals: async () => data.intervals
-    } as unknown as BinanceClient,
-    chat: {
-      send: async () => {
-        webhookPosts += 1;
-        if (webhookPosts === 1) {
-          markFirstPostStarted?.();
-          await holdFirstPost;
+  const makeDeps = (): FundingJobDeps => {
+    const { deps } = dependencies();
+    return {
+      ...deps,
+      chat: {
+        send: async () => {
+          webhookPosts += 1;
+          if (webhookPosts === 1) {
+            markFirstPostStarted?.();
+            await holdFirstPost;
+          }
         }
-      }
-    } as unknown as GoogleChatClient,
-    state: new FileRunStateStore(statePath),
-    now: () => AS_OF + 10,
-    logger: { info: () => {}, warn: () => {}, error: () => {} } satisfies Logger
-  });
+      } as unknown as GoogleChatClient,
+      state: new FileRunStateStore(statePath)
+    };
+  };
 
-  const firstJob = runFundingJob(makeDeps(), {
-    slot,
-    trigger: 'cron',
-    dryRun: false,
-    force: false
-  });
+  const firstJob = runFundingJob(makeDeps(), jobOptions({ trigger: 'cron' }));
   await firstPostStarted;
-  const secondJob = runFundingJob(makeDeps(), {
-    slot,
-    trigger: 'manual',
-    dryRun: false,
-    force: false
-  });
+  const secondJob = runFundingJob(makeDeps(), jobOptions());
   await new Promise<void>((resolve) => setImmediate(resolve));
   await new Promise<void>((resolve) => setImmediate(resolve));
   const postsWhileFirstWasHeld = webhookPosts;
@@ -214,71 +264,67 @@ test('serializes two independent jobs across the complete duplicate-check and se
   assert.equal(JSON.parse(await readFile(statePath, 'utf8')).lastSuccessfulSlot, slot.key);
 });
 
-test('force bypasses only the duplicate check and still sends a validated run', async () => {
+test('force bypasses only the duplicate check and still runs all venue phases', async () => {
   const { deps, calls } = dependencies(slot.key);
 
-  const result = await runFundingJob(deps, {
-    slot,
-    trigger: 'manual',
-    dryRun: false,
-    force: true
-  });
+  const result = await runFundingJob(deps, jobOptions({ force: true }));
 
   assert.equal(result.status, 'sent');
-  assert.deepEqual(calls.slice(0, 3), [
-    'state.read',
-    'binance.time',
-    'binance.exchange'
-  ]);
-  assert.equal(calls.includes('chat.send'), true);
-  assert.equal(calls.includes('state.write'), true);
+  assert.equal(calls[0], 'state.read');
+  assert.equal(calls.filter((call) => call.endsWith('.current')).length, 5);
+  assert.equal(calls.filter((call) => call.includes('.history:')).length, 100);
+  assert.deepEqual(calls.slice(-2), ['chat.send', 'state.write']);
 });
 
-for (const [name, expectedStage, expectedCategory, expectedAsOf, change] of [
-  ['Binance schema failure', 'data-fetch', 'binance-request', null, (deps: ReturnType<typeof dependencies>['deps']) => {
-    (deps.binance as unknown as { getServerTime(): Promise<number> }).getServerTime = async () => {
-      throw new Error('Binance response validation failed');
+type FailureCase = readonly [
+  name: string,
+  expectedStage: string,
+  expectedCategory: string,
+  expectedAsOf: number | null,
+  options: FakeOptions,
+  change: (deps: FundingJobDeps) => void
+];
+
+const failureCases: FailureCase[] = [
+  ['one venue current timeout', 'current-fetch', 'okx-timeout', null, {}, (deps) => {
+    deps.venues.okx.getCurrentSnapshot = async () => {
+      throw new VenueTimeoutError('okx', 'GET', '/api/v5/public/funding-rate');
     };
   }],
-  ['Binance retry failure', 'data-fetch', 'binance-request', null, (deps: ReturnType<typeof dependencies>['deps']) => {
-    (deps.binance as unknown as { getServerTime(): Promise<number> }).getServerTime = async () => {
-      throw new Error('Binance network request failed');
+  ['one venue current request failure', 'current-fetch', 'bitget-request', null, {}, (deps) => {
+    deps.venues.bitget.getCurrentSnapshot = async () => {
+      throw new VenueRequestError('bitget', 'Bitget response validation failed');
     };
   }],
-  ['Binance pagination failure', 'data-fetch', 'binance-request', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
-    (deps.binance as unknown as { getFundingHistory(start: number, end: number): Promise<unknown> }).getFundingHistory = async () => {
-      throw new Error('Funding history pagination stalled');
+  ['fewer than 20 cross-venue candidates', 'rank', 'funding-compute', JOB_AS_OF, { candidateCount: 19 }, () => {}],
+  ['selected history rejection', 'history-fetch', 'bybit-request', JOB_AS_OF, {}, (deps) => {
+    deps.venues.bybit.getFundingHistory = async () => {
+      throw new VenueRequestError('bybit', 'Bybit funding history failed');
     };
   }],
-  ['fewer than 20 valid rows', 'compute', 'funding-compute', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
-    (deps.binance as unknown as { getExchangeSymbols(): Promise<unknown[]> }).getExchangeSymbols = async () => jobData().contracts.slice(0, 19);
-  }],
-  ['an at-limit Chat payload', 'card-build', 'chat-payload', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
-    (deps.binance as unknown as { getExchangeSymbols(): Promise<unknown[]> }).getExchangeSymbols = async () =>
-      jobData().contracts.map((item) => ({ ...item, baseAsset: '币'.repeat(2_000) }));
-  }],
-  ['an explicit Google Chat non-2xx failure', 'webhook', 'google-chat-request', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
+  ['payload overflow', 'card-build', 'chat-payload', JOB_AS_OF, { assetLength: 1_600 }, () => {}],
+  ['Google Chat non-2xx failure', 'webhook', 'google-chat-request', JOB_AS_OF, {}, (deps) => {
     (deps.chat as unknown as { send(): Promise<void> }).send = async () => {
       throw new GoogleChatRequestError('Google Chat request failed: POST returned 500', 500);
     };
   }],
-  ['an ambiguous Google Chat timeout', 'webhook', 'google-chat-timeout', AS_OF, (deps: ReturnType<typeof dependencies>['deps']) => {
+  ['Google Chat timeout', 'webhook', 'google-chat-timeout', JOB_AS_OF, {}, (deps) => {
     (deps.chat as unknown as { send(): Promise<void> }).send = async () => {
       throw new GoogleChatTimeoutError();
     };
   }]
-] as const) {
-  test(`${name} does not record the slot as successful`, async () => {
-    const { deps, calls, logs } = dependencies(slot.key);
+];
+
+for (const [name, expectedStage, expectedCategory, expectedAsOf, options, change] of failureCases) {
+  test(`${name} fails the run without sending or committing later phases`, async () => {
+    const { deps, calls, logs } = dependencies(null, options);
     change(deps);
 
-    await assert.rejects(runFundingJob(deps, {
-      slot,
-      trigger: 'manual',
-      dryRun: false,
-      force: true
-    }));
+    await assert.rejects(runFundingJob(deps, jobOptions({ force: true })));
 
+    if (expectedStage !== 'webhook') {
+      assert.equal(calls.includes('chat.send'), false);
+    }
     assert.equal(calls.includes('state.write'), false);
     const failures = logs.filter((entry) => entry.event === 'funding_job.failed');
     assert.equal(failures.length, 1);
@@ -294,39 +340,42 @@ for (const [name, expectedStage, expectedCategory, expectedAsOf, change] of [
   });
 }
 
-test('failure observability omits webhook secrets and large response bodies', async () => {
+test('logs expose counts and durations but omit response bodies and webhook secrets', async () => {
   const { deps, logs } = dependencies();
   const webhook = 'https://chat.googleapis.com/v1/spaces/space/messages?key=secret-key&token=secret-token';
   (deps.chat as unknown as { send(): Promise<void> }).send = async () => {
     throw new GoogleChatRequestError(`upstream echoed ${webhook}: ${'x'.repeat(5_000)}`, 500);
   };
 
-  await assert.rejects(runFundingJob(deps, {
-    slot,
-    trigger: 'manual',
-    dryRun: false,
-    force: true
-  }), GoogleChatRequestError);
+  await assert.rejects(runFundingJob(deps, jobOptions({ force: true })), GoogleChatRequestError);
 
-  const failures = logs.filter((entry) => entry.event === 'funding_job.failed');
-  assert.equal(failures.length, 1);
-  const serialized = JSON.stringify(failures);
+  const serialized = JSON.stringify(logs);
   assert.doesNotMatch(serialized, /chat\.googleapis\.com|secret-key|secret-token|x{100}/);
 });
 
-test('createApp assembles the configured concrete dependencies', () => {
+test('createApp assembles all five configured venue adapters', () => {
   const app = createApp({
-    binanceBaseUrl: new URL('https://fapi.binance.com'),
+    exchangeBaseUrls: {
+      binance: new URL('https://fapi.binance.com'),
+      okx: new URL('https://www.okx.com'),
+      hyperliquid: new URL('https://api.hyperliquid.xyz'),
+      bybit: new URL('https://api.bybit.com'),
+      bitget: new URL('https://api.bitget.com')
+    },
     googleChatWebhookUrl: new URL('https://chat.googleapis.com/v1/spaces/space/messages?key=k&token=t'),
     stateFile: '/tmp/bn-funding-state.json',
     timezone: 'Asia/Shanghai',
     schedule: '5 0,8,16 * * *',
     catchUpWindowMs: 30 * 60_000,
-    binanceTimeoutMs: 10_000,
+    exchangeTimeoutMs: 10_000,
     chatTimeoutMs: 15_000
   });
 
-  assert.equal(app.binance.constructor.name, 'BinanceClient');
+  assert.equal(app.venues.binance.constructor.name, 'BinanceVenueAdapter');
+  assert.equal(app.venues.okx.constructor.name, 'OkxClient');
+  assert.equal(app.venues.hyperliquid.constructor.name, 'HyperliquidClient');
+  assert.equal(app.venues.bybit.constructor.name, 'BybitClient');
+  assert.equal(app.venues.bitget.constructor.name, 'BitgetClient');
   assert.ok(app.chat instanceof GoogleChatClient);
   assert.ok(app.state instanceof FileRunStateStore);
 });

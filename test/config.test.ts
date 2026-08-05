@@ -17,10 +17,18 @@ test('daemon configuration is production-safe', () => {
 
   assert.equal(config.schedule, '5 0,8,16 * * *');
   assert.equal(config.timezone, 'Asia/Shanghai');
-  assert.equal(config.binanceTimeoutMs, 10_000);
+  assert.deepEqual(Object.fromEntries(
+    Object.entries(config.exchangeBaseUrls).map(([venue, url]) => [venue, url.origin])
+  ), {
+    binance: 'https://fapi.binance.com',
+    okx: 'https://www.okx.com',
+    hyperliquid: 'https://api.hyperliquid.xyz',
+    bybit: 'https://api.bybit.com',
+    bitget: 'https://api.bitget.com'
+  });
+  assert.equal(config.exchangeTimeoutMs, 10_000);
   assert.equal(config.chatTimeoutMs, 15_000);
   assert.equal(config.catchUpWindowMs, 30 * 60_000);
-  assert.equal(config.binanceBaseUrl.href, 'https://fapi.binance.com/');
 });
 
 for (const mode of ['daemon', 'send'] as const) {

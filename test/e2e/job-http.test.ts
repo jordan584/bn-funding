@@ -6,9 +6,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { BinanceClient } from '../../src/binance/client.js';
+import { BinanceVenueAdapter } from '../../src/binance/adapter.js';
 import { GoogleChatClient } from '../../src/chat/client.js';
-import type { GoogleChatMessage, Logger, ScheduledSlot } from '../../src/domain.js';
+import {
+  type FundingVenueAdapter,
+  type GoogleChatMessage,
+  type Logger,
+  type ScheduledSlot,
+  type VenueHistoryRequest,
+  type VenueId
+} from '../../src/domain.js';
 import { runFundingJob } from '../../src/job.js';
 import { FileRunStateStore } from '../../src/state/store.js';
 import { AS_OF, DAY, contract, history, interval, premium } from '../helpers/fixtures.js';
@@ -37,12 +44,10 @@ async function requestBody(request: IncomingMessage): Promise<string> {
 
 function assetsFrom(message: GoogleChatMessage): string[] {
   return message.cardsV2.flatMap(({ card }) => {
-    const sections = card.sections as Array<{ widgets: Array<{
-      columns?: { columnItems: Array<{ widgets: Array<{ decoratedText?: { text: string } }> }> };
-    }> }>;
+    const sections = card.sections as Array<{ widgets: Array<{ textParagraph?: { text: string } }> }>;
     return sections.flatMap(({ widgets }) => widgets.flatMap((widget) => {
-      const text = widget.columns?.columnItems[0]?.widgets[0]?.decoratedText?.text;
-      return text === undefined ? [] : [text.replace(/^<b>|<\/b>$/g, '')];
+      const match = widget.textParagraph?.text.match(/^<b>#\d+ ([A-Z0-9]+)<\/b>/);
+      return match === null || match === undefined ? [] : [match[1]!];
     }));
   });
 }
@@ -75,7 +80,10 @@ test('sends the real local HTTP Top20 once, persists after webhook success, and 
         json(response, { symbols: contracts });
         return;
       case '/fapi/v1/fundingRate':
-        json(response, historyRecords);
+        json(response, historyRecords.filter((record) => (
+          requestUrl.searchParams.get('symbol') === null
+          || record.symbol === requestUrl.searchParams.get('symbol')
+        )));
         return;
       case '/fapi/v1/premiumIndex':
         json(response, premiums);
@@ -113,8 +121,43 @@ test('sends the real local HTTP Top20 once, persists after webhook success, and 
   assert.ok(address !== null && typeof address !== 'string');
   const baseUrl = new URL(`http://127.0.0.1:${address.port}`);
   const logger: Logger = { info: () => {}, warn: () => {}, error: () => {} };
+  const stubVenue = (venue: Exclude<VenueId, 'binance'>): FundingVenueAdapter => ({
+    id: venue,
+    getCurrentSnapshot: async () => ({
+      venue,
+      observedAt: AS_OF,
+      markets: symbols.map((symbol) => ({
+        venue,
+        marketId: `${venue}-${symbol}`,
+        rawBaseAsset: symbol.replace(/USDT$/, ''),
+        quoteAsset: venue === 'hyperliquid' ? 'USD' : 'USDT',
+        settleAsset: venue === 'hyperliquid' ? 'USDC' : 'USDT',
+        nextFundingRate: '0.0001',
+        intervalHours: 8,
+        nextFundingTime: AS_OF + 8 * 60 * 60 * 1_000
+      })),
+      stats: { marketCount: symbols.length, requestCount: 1, pageCount: 1 }
+    }),
+    getFundingHistory: async (request: VenueHistoryRequest) => ({
+      records: [{
+        venue,
+        marketId: request.market.marketId,
+        fundingRate: '0.0001',
+        fundingTime: request.endTime - 1
+      }],
+      requestCount: 1,
+      pageCount: 1,
+      completeFrom: request.startTime
+    })
+  });
   const deps = {
-    binance: new BinanceClient({ baseUrl }),
+    venues: {
+      binance: new BinanceVenueAdapter({ baseUrl }),
+      okx: stubVenue('okx'),
+      hyperliquid: stubVenue('hyperliquid'),
+      bybit: stubVenue('bybit'),
+      bitget: stubVenue('bitget')
+    },
     chat: new GoogleChatClient({ webhookUrl: new URL('/webhook', baseUrl) }),
     state: new FileRunStateStore(stateFile),
     now: () => AS_OF + 1,
@@ -129,7 +172,17 @@ test('sends the real local HTTP Top20 once, persists after webhook success, and 
   });
 
   assert.deepEqual(sent, { status: 'sent', slot: slot.key, rowCount: 20 });
-  assert.deepEqual([...routeCalls].sort(), [...binancePaths, '/webhook'].sort());
+  assert.deepEqual(Object.fromEntries(binancePaths.map((route) => [
+    route,
+    routeCalls.filter((call) => call === route).length
+  ])), {
+    '/fapi/v1/time': 1,
+    '/fapi/v1/exchangeInfo': 1,
+    '/fapi/v1/fundingRate': 20,
+    '/fapi/v1/premiumIndex': 1,
+    '/fapi/v1/fundingInfo': 1
+  });
+  assert.equal(routeCalls.filter((call) => call === '/webhook').length, 1);
   assert.equal(webhookPayloads.length, 1);
   const webhookPayload = webhookPayloads[0]!;
   assert.equal(webhookPayload.cardsV2.length, 2);

@@ -47,13 +47,19 @@ export function loadConfig(env: NodeJS.ProcessEnv, mode: RunMode): AppConfig {
   }
 
   return {
-    binanceBaseUrl: new URL('https://fapi.binance.com'),
+    exchangeBaseUrls: {
+      binance: new URL('https://fapi.binance.com'),
+      okx: new URL('https://www.okx.com'),
+      hyperliquid: new URL('https://api.hyperliquid.xyz'),
+      bybit: new URL('https://api.bybit.com'),
+      bitget: new URL('https://api.bitget.com')
+    },
     ...(webhookValue ? { googleChatWebhookUrl: parseGoogleChatWebhook(webhookValue) } : {}),
     stateFile: stateFile ?? DEFAULT_STATE_FILE,
     timezone,
     schedule: '5 0,8,16 * * *',
     catchUpWindowMs: 30 * 60_000,
-    binanceTimeoutMs: 10_000,
+    exchangeTimeoutMs: 10_000,
     chatTimeoutMs: 15_000
   };
 }

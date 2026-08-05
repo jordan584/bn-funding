@@ -1,16 +1,16 @@
-import Decimal, { Decimal as DecimalInstance } from 'decimal.js';
+import type { Decimal as DecimalInstance } from 'decimal.js';
 
 export type RunMode = 'daemon' | 'send' | 'dry-run';
 export type TriggerSource = 'cron' | 'startup-catchup' | 'manual';
 
 export interface AppConfig {
-  binanceBaseUrl: URL;
+  exchangeBaseUrls: Record<VenueId, URL>;
   googleChatWebhookUrl?: URL;
   stateFile: string;
   timezone: 'Asia/Shanghai';
   schedule: '5 0,8,16 * * *';
   catchUpWindowMs: number;
-  binanceTimeoutMs: number;
+  exchangeTimeoutMs: number;
   chatTimeoutMs: number;
 }
 
@@ -39,28 +39,6 @@ export interface PremiumIndexRecord {
 export interface FundingIntervalInfo {
   symbol: string;
   fundingIntervalHours: number;
-}
-
-export interface FundingRow {
-  rank: number;
-  symbol: string;
-  asset: string;
-  exchange: 'Binance';
-  intervalHours: number;
-  currentRate: DecimalInstance;
-  currentApr: DecimalInstance;
-  funding24h: DecimalInstance;
-  apr24h: DecimalInstance;
-  funding7d: DecimalInstance;
-  apr7d: DecimalInstance;
-  partialSevenDayHistory: boolean;
-}
-
-export interface FundingLeaderboard {
-  asOf: number;
-  eligibleContractCount: number;
-  historyRecordCount: number;
-  rows: FundingRow[];
 }
 
 export interface GoogleChatMessage {
