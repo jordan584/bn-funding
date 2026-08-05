@@ -116,8 +116,10 @@ approved venues, using only assets covered by at least two venues. On both
 desktop and mobile, verify all 20 assets are visible and every asset shows all
 five venue positions. A listed position shows estimated next Funding, its
 period and APR, plus the realized seven-day daily average and APR. `--` means
-the asset is not listed on that venue; `*` means that venue's available history
-is shorter than seven days. Confirm the card footnotes explain these semantics.
+the asset is not listed on that venue; verify it in the affected venue rows.
+`*` means that venue's available history is shorter than seven days. Confirm
+the card footnotes explain that next Funding is the current estimate with APR
+in parentheses and that `*` marks history shorter than seven days.
 Remove the test Webhook from the secret manager or the PM2/server environment
 after validation; it must not remain in shell history or a tracked file.
 
