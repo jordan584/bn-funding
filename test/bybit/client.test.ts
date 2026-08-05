@@ -145,6 +145,49 @@ test('fails the complete snapshot when an eligible contract has no current ticke
   await assert.rejects(client.getCurrentSnapshot(), /Missing Bybit current funding for ETHUSDT/);
 });
 
+test('fails closed for duplicate, non-finite, and stale current funding tickers', async () => {
+  const cases: Array<{
+    name: string;
+    tickers: ReturnType<typeof ticker>[];
+    error: RegExp;
+  }> = [
+    {
+      name: 'a duplicate eligible ticker',
+      tickers: [ticker('BTCUSDT'), ticker('BTCUSDT', { fundingRate: '0.0003' })],
+      error: /Duplicate Bybit current funding for BTCUSDT/
+    },
+    ...['NaN', 'Infinity', '-Infinity'].map((fundingRate) => ({
+      name: `a ${fundingRate} funding rate`,
+      tickers: [ticker('BTCUSDT', { fundingRate })],
+      error: /Invalid Bybit funding for BTCUSDT/
+    })),
+    {
+      name: 'an unsafe next funding time',
+      tickers: [ticker('BTCUSDT', { nextFundingTime: String(Number.MAX_SAFE_INTEGER + 1) })],
+      error: /Invalid Bybit nextFundingTime/
+    },
+    {
+      name: 'a next funding time that is not later than observation',
+      tickers: [ticker('BTCUSDT', { nextFundingTime: String(AS_OF) })],
+      error: /Invalid Bybit nextFundingTime for BTCUSDT/
+    }
+  ];
+
+  for (const { name, tickers, error } of cases) {
+    const client = new BybitClient({
+      baseUrl,
+      fetch: queuedFetch([
+        jsonResponse(envelope({ list: [instrument('BTCUSDT')], nextPageCursor: '' })),
+        jsonResponse(envelope({ category: 'linear', list: tickers }))
+      ], []),
+      now: () => AS_OF,
+      sleep: async () => {}
+    });
+
+    await assert.rejects(client.getCurrentSnapshot(), error, name);
+  }
+});
+
 test('rejects a snapshot with no Trading USDT linear perpetuals', async () => {
   const client = new BybitClient({
     baseUrl,
