@@ -10,6 +10,7 @@ test('uses the five approved venues in stable card order', () => {
 
 test('normalizes case and approved multiplier aliases without guessing', () => {
   assert.equal(normalizeAsset('binance', 'btc'), 'BTC');
+  assert.equal(normalizeAsset('binance', ' 币安人生 '), '币安人生');
   assert.equal(normalizeAsset('binance', '1000PEPE'), 'PEPE');
   assert.equal(normalizeAsset('hyperliquid', 'kPEPE'), 'PEPE');
   assert.equal(normalizeAsset('bybit', '1MBABYDOGE'), 'BABYDOGE');
@@ -19,4 +20,7 @@ test('normalizes case and approved multiplier aliases without guessing', () => {
 test('rejects blank or unsafe asset identifiers', () => {
   assert.throws(() => normalizeAsset('bitget', ''), /Invalid bitget base asset/);
   assert.throws(() => normalizeAsset('okx', 'BTC<'), /Invalid okx base asset/);
+  assert.throws(() => normalizeAsset('binance', '币 安'), /Invalid binance base asset/);
+  assert.throws(() => normalizeAsset('binance', '币-安'), /Invalid binance base asset/);
+  assert.throws(() => normalizeAsset('binance', '币\u0000安'), /Invalid binance base asset/);
 });

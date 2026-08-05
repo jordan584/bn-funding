@@ -19,11 +19,12 @@ const ALIASES: Record<VenueId, Readonly<Record<string, string>>> = {
 
 export function normalizeAsset(venue: VenueId, rawBaseAsset: string): string {
   const normalized = rawBaseAsset.trim().toUpperCase();
-  if (!/^[A-Z0-9]+$/.test(normalized)) {
-    throw new Error(`Invalid ${venue} base asset`);
-  }
   const venueAliases = Object.fromEntries(
     Object.entries(ALIASES[venue]).map(([key, value]) => [key.toUpperCase(), value])
   );
-  return venueAliases[normalized] ?? normalized;
+  const aliased = venueAliases[normalized] ?? normalized;
+  if (!/^[\p{L}\p{N}]+$/u.test(aliased)) {
+    throw new Error(`Invalid ${venue} base asset`);
+  }
+  return aliased;
 }

@@ -1,12 +1,16 @@
-# Binance Funding Monitor
+# Five-Venue Funding Monitor
 
-This service ranks Binance USDⓈ-M USDT perpetual contracts by settled Funding
-over the previous 24 hours, then posts one Google Chat message containing two
-mobile-readable Top10 cards. It runs in the `Asia/Shanghai` timezone.
+This service ranks assets by the equal-weight average of estimated next-Funding
+APR across Binance, OKX, Hyperliquid, Bybit, and Bitget. An asset must be listed
+on at least two of those approved venues to qualify. Each run posts one Google
+Chat message containing two mobile-readable Top10 cards and runs in the
+`Asia/Shanghai` timezone.
 
 ## Prerequisites
 
 - Node.js **24 LTS** (the service does not support Node.js 20 or earlier).
+- No venue API key is needed; all five market-data integrations use public
+  endpoints.
 - PM2 installed for the operating-system user that will run the monitor, for
   example `npm install --global pm2` under that user.
 - A Google Chat incoming Webhook for the destination space. Treat its URL as a
@@ -75,16 +79,18 @@ scheduled run is `5 0,8,16 * * *` in Asia/Shanghai: 00:05, 08:05, and 16:05
 Beijing time. On restart, the daemon catches up only the most recent missed
 slot and only when it is within 30 minutes and has not already completed.
 
-Before connecting Chat, verify the live public Binance data path after a
-build:
+Before connecting Chat, verify all five live public-data paths after a build:
 
 ```bash
 npm run dry-run
 ```
 
-It prints the ranked Top20 and neither calls Google Chat nor reads or writes
-the state file. A normal one-off send and an explicitly forced one-off send
-are:
+The structured completion log should report a market count for each of
+`binance`, `okx`, `hyperliquid`, `bybit`, and `bitget`. The output must contain
+exactly 20 ranked assets with five venue positions per asset (100 positions in
+total), and every asset must have values from at least two venues. Dry-run
+neither calls Google Chat nor reads or writes the state file. A normal one-off
+send and an explicitly forced one-off send are:
 
 ```bash
 npm run push:once
@@ -104,23 +110,31 @@ npm run push:once -- --force
 unset GOOGLE_CHAT_WEBHOOK_URL
 ```
 
-Confirm exactly one Google Chat message arrives with two Top10 cards. On both
-desktop and mobile, verify all 20 assets are visible, each row shows current,
-24-hour, and 7-day Funding with APRs, Funding periods are visible, and the
-card footnotes are present. Remove the test Webhook from the secret manager or
-the PM2/server environment after validation; it must not remain in shell
-history or a tracked file.
+Confirm exactly one Google Chat message arrives with two Top10 cards. The rank
+must be the equal-weight average of estimated next-Funding APR across the five
+approved venues, using only assets covered by at least two venues. On both
+desktop and mobile, verify all 20 assets are visible and every asset shows all
+five venue positions. A listed position shows estimated next Funding, its
+period and APR, plus the realized seven-day daily average and APR. `--` means
+the asset is not listed on that venue; `*` means that venue's available history
+is shorter than seven days. Confirm the card footnotes explain these semantics.
+Remove the test Webhook from the secret manager or the PM2/server environment
+after validation; it must not remain in shell history or a tracked file.
 
 ## Recovery
 
-### Binance failure
+### Venue public-data failure
 
 Check `pm2 logs bn-funding` for validation, timeout, retry, or pagination
-errors and confirm public Binance connectivity. A failed run does not mark
-the slot successful. Once Binance recovers, allow the next scheduled run, use
-the 30-minute restart catch-up window when applicable, or run `npm run
-push:once` manually. Do not use `--force` unless you deliberately accept a
-duplicate.
+errors. A complete current snapshot is required from each of Binance, OKX,
+Hyperliquid, Bybit, and Bitget; failure of any one venue suppresses the entire
+run, so the service never sends a partial-weight message. Confirm connectivity
+to the public API named in the error and wait for that venue to recover. The
+failed run does not mark the slot successful. After recovery, allow the next
+scheduled run, use the 30-minute restart catch-up window when applicable, or
+run `npm run push:once` manually. Do not force a partial run; `--force` bypasses
+only duplicate-slot prevention and should be used only when you deliberately
+accept a duplicate message.
 
 ### Google Chat timeout or non-2xx response
 

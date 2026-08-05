@@ -88,6 +88,18 @@ function metricForMarket(market: VenueFundingSnapshot, snapshot: VenueSnapshot):
   };
 }
 
+function compareAssetIds(left: string, right: string): number {
+  const leftCodePoints = [...left].map((character) => character.codePointAt(0)!);
+  const rightCodePoints = [...right].map((character) => character.codePointAt(0)!);
+  const sharedLength = Math.min(leftCodePoints.length, rightCodePoints.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (leftCodePoints[index] !== rightCodePoints[index]) {
+      return leftCodePoints[index]! - rightCodePoints[index]!;
+    }
+  }
+  return leftCodePoints.length - rightCodePoints.length;
+}
+
 function compareRows(left: CompositeFundingRow, right: CompositeFundingRow): number {
   const aprComparison = right.compositeNextApr.comparedTo(left.compositeNextApr);
   if (aprComparison !== 0) {
@@ -96,7 +108,7 @@ function compareRows(left: CompositeFundingRow, right: CompositeFundingRow): num
   if (left.coverageCount !== right.coverageCount) {
     return right.coverageCount - left.coverageCount;
   }
-  return left.asset < right.asset ? -1 : left.asset > right.asset ? 1 : 0;
+  return compareAssetIds(left.asset, right.asset);
 }
 
 function assertRankedRows(rows: CompositeFundingRow[]): void {

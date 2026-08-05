@@ -21,10 +21,10 @@ export const bitgetCurrentFundingSchema = z.object({
   fundingRate: z.string(),
   fundingRateInterval: z.enum(['1', '2', '4', '8']),
   nextUpdate: z.string(),
-  minFundingRate: z.string(),
-  maxFundingRate: z.string(),
-  cashDividend: z.string(),
-  cashDividendNextUpdate: z.string()
+  minFundingRate: z.string().nullable(),
+  maxFundingRate: z.string().nullable(),
+  cashDividend: z.string().nullable(),
+  cashDividendNextUpdate: z.string().nullable()
 });
 
 export const bitgetFundingHistorySchema = z.object({

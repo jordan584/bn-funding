@@ -75,6 +75,28 @@ test('joins normal USDT contracts to current Funding and its 1/2/4/8-hour interv
   assert.deepEqual(snapshot.stats, { marketCount: 1, requestCount: 2, pageCount: 0 });
 });
 
+test('accepts null optional metadata in the current Funding response', async () => {
+  const client = new BitgetClient({
+    baseUrl,
+    fetch: queuedFetch([
+      jsonResponse(envelope([contract('BTCUSDT')])),
+      jsonResponse(envelope([{
+        ...current('BTCUSDT'),
+        minFundingRate: null,
+        maxFundingRate: null,
+        cashDividend: null,
+        cashDividendNextUpdate: null
+      }]))
+    ], []),
+    now: () => AS_OF,
+    sleep: async () => {}
+  });
+
+  const snapshot = await client.getCurrentSnapshot();
+
+  assert.equal(snapshot.markets[0]?.marketId, 'BTCUSDT');
+});
+
 test('rejects a non-success Bitget business code from an HTTP-success response', async () => {
   const client = new BitgetClient({
     baseUrl,
@@ -107,6 +129,7 @@ test('fails the complete snapshot when an eligible contract has no current fundi
       jsonResponse(envelope([contract('BTCUSDT'), contract('ETHUSDT')])),
       jsonResponse(envelope([current('BTCUSDT')]))
     ], []),
+    now: () => AS_OF,
     sleep: async () => {}
   });
 
