@@ -16,3 +16,26 @@ test('preserves order while never exceeding the requested concurrency', async ()
   assert.deepEqual(result, [2, 4, 6, 8, 10]);
   assert.equal(maximum, 2);
 });
+
+test('rejects when a worker rejects', async () => {
+  await assert.rejects(
+    mapWithConcurrency([1, 2, 3], 1, async (value) => {
+      if (value === 2) {
+        throw new Error('worker failed');
+      }
+      return value;
+    }),
+    /worker failed/
+  );
+});
+
+test('rejects zero and non-integer concurrency', async () => {
+  await assert.rejects(
+    mapWithConcurrency([1], 0, async (value) => value),
+    /concurrency must be a positive integer/
+  );
+  await assert.rejects(
+    mapWithConcurrency([1], 1.5, async (value) => value),
+    /concurrency must be a positive integer/
+  );
+});

@@ -101,7 +101,7 @@ export class PublicJsonClient {
         if (!retryable || retryIndex >= this.maxRetries) {
           throw new VenueRequestError(
             this.venue,
-            await this.responseErrorMessage(method, errorPath, response)
+            await this.responseErrorMessage(method, errorPath, response, signal)
           );
         }
         await this.sleep(this.retryDelayMs(response, retryIndex));
@@ -186,11 +186,19 @@ export class PublicJsonClient {
     return Math.min(500 * 2 ** retryIndex + this.random() * 250, 10_000);
   }
 
-  private async responseErrorMessage(method: string, path: string, response: Response): Promise<string> {
+  private async responseErrorMessage(
+    method: string,
+    path: string,
+    response: Response,
+    signal: AbortSignal
+  ): Promise<string> {
     let body = '';
     try {
-      body = (await response.text()).slice(0, MAX_ERROR_BODY);
-    } catch {
+      body = (await this.withTimeout(response.text(), signal)).slice(0, MAX_ERROR_BODY);
+    } catch (error) {
+      if (isTimeout(error, signal)) {
+        throw error;
+      }
       // The status is sufficient to report a failed request.
     }
     const bodySuffix = body === '' ? '' : `: ${body}`;
