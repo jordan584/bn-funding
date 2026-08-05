@@ -6,11 +6,13 @@ import type {
   VenueFundingSnapshot,
   VenueHistoryRequest,
   VenueHistoryResult,
+  VenueRequestTelemetrySink,
   VenueSnapshot
 } from '../domain.js';
 import {
   PublicJsonClient,
   type PublicJsonClientOptions,
+  requestTelemetryContext,
   VenueRequestError
 } from '../exchanges/http.js';
 import {
@@ -53,7 +55,7 @@ export class BitgetClient implements FundingVenueAdapter {
     this.http = new PublicJsonClient(httpOptions);
   }
 
-  async getCurrentSnapshot(): Promise<VenueSnapshot> {
+  async getCurrentSnapshot(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<VenueSnapshot> {
     const observedAt = this.now();
     if (!Number.isSafeInteger(observedAt)) {
       throw new VenueRequestError(this.id, 'Invalid Bitget observation time');
@@ -61,7 +63,11 @@ export class BitgetClient implements FundingVenueAdapter {
 
     const contracts = this.parseEnvelope(
       bitgetContractsEnvelopeSchema,
-      await this.http.getJson('/api/v2/mix/market/contracts', { productType: 'usdt-futures' })
+      await this.http.getJson(
+        '/api/v2/mix/market/contracts',
+        { productType: 'usdt-futures' },
+        requestTelemetryContext('current', onRequestTelemetry)
+      )
     );
     const eligibleContracts = contracts.filter((contract) => (
       contract.symbolStatus === 'normal'
@@ -85,7 +91,11 @@ export class BitgetClient implements FundingVenueAdapter {
 
     const currentFunding = this.parseEnvelope(
       bitgetCurrentFundingEnvelopeSchema,
-      await this.http.getJson('/api/v3/market/current-fund-rate', { category: 'USDT-FUTURES' })
+      await this.http.getJson(
+        '/api/v3/market/current-fund-rate',
+        { category: 'USDT-FUTURES' },
+        requestTelemetryContext('current', onRequestTelemetry)
+      )
     );
     const fundingBySymbol = new Map<string, typeof currentFunding[number]>();
     for (const funding of currentFunding) {
@@ -107,7 +117,7 @@ export class BitgetClient implements FundingVenueAdapter {
       if (nextFundingTime <= observedAt) {
         throw new VenueRequestError(this.id, `Invalid Bitget nextUpdate for ${contract.symbol}`);
       }
-      const listedAt = parseOptionalTimestamp(contract.launchTime);
+      const listedAt = parseOptionalTimestamp(contract.launchTime, contract.symbol, observedAt);
       markets.push({
         venue: this.id,
         marketId: contract.symbol,
@@ -129,7 +139,10 @@ export class BitgetClient implements FundingVenueAdapter {
     };
   }
 
-  async getFundingHistory(request: VenueHistoryRequest): Promise<VenueHistoryResult> {
+  async getFundingHistory(
+    request: VenueHistoryRequest,
+    onRequestTelemetry?: VenueRequestTelemetrySink
+  ): Promise<VenueHistoryResult> {
     validateHistoryWindow(request.startTime, request.endTime);
     const records: VenueHistoryResult['records'] = [];
     const seen = new Set<string>();
@@ -145,7 +158,7 @@ export class BitgetClient implements FundingVenueAdapter {
           productType: 'usdt-futures',
           pageSize: String(HISTORY_PAGE_SIZE),
           pageNo: String(pageNo)
-        })
+        }, requestTelemetryContext('history', onRequestTelemetry))
       );
       pageCount += 1;
       let oldestFundingTime = Number.POSITIVE_INFINITY;
@@ -212,10 +225,17 @@ function parseTimestamp(value: string, field: string): number {
   return timestamp;
 }
 
-function parseOptionalTimestamp(value: string): number | undefined {
+function parseOptionalTimestamp(
+  value: string,
+  symbol: string,
+  observedAt: number
+): number | undefined {
   if (value.trim() === '') return undefined;
   const timestamp = Number(value);
-  return Number.isSafeInteger(timestamp) ? timestamp : undefined;
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0 || timestamp > observedAt) {
+    throw new VenueRequestError('bitget', `Invalid Bitget launchTime for ${symbol}`);
+  }
+  return timestamp;
 }
 
 function validateFundingRate(value: string, symbol: string): void {

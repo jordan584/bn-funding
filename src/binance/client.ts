@@ -2,7 +2,8 @@ import type {
   ExchangeSymbol,
   FundingHistoryRecord,
   FundingIntervalInfo,
-  PremiumIndexRecord
+  PremiumIndexRecord,
+  VenueRequestTelemetrySink
 } from '../domain.js';
 import {
   exchangeInfoResponseSchema,
@@ -68,35 +69,38 @@ export class BinanceClient {
     this.random = options.random ?? Math.random;
   }
 
-  async getServerTime(): Promise<number> {
-    const payload = await this.getJson('/fapi/v1/time');
+  async getServerTime(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<number> {
+    const payload = await this.getJson('/fapi/v1/time', {}, 'current', onRequestTelemetry);
     return this.parse(serverTimeResponseSchema, payload).serverTime;
   }
 
-  async getExchangeSymbols(): Promise<ExchangeSymbol[]> {
-    const payload = await this.getJson('/fapi/v1/exchangeInfo');
+  async getExchangeSymbols(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<ExchangeSymbol[]> {
+    const payload = await this.getJson('/fapi/v1/exchangeInfo', {}, 'current', onRequestTelemetry);
     return this.parse(exchangeInfoResponseSchema, payload).symbols;
   }
 
   async getFundingHistory(
     startTime: number,
-    endTime: number
+    endTime: number,
+    onRequestTelemetry?: VenueRequestTelemetrySink
   ): Promise<{ records: FundingHistoryRecord[]; pageCount: number }> {
-    return this.getFundingHistoryPages(startTime, endTime);
+    return this.getFundingHistoryPages(startTime, endTime, undefined, onRequestTelemetry);
   }
 
   async getFundingHistoryForMarket(
     symbol: string,
     startTime: number,
-    endTime: number
+    endTime: number,
+    onRequestTelemetry?: VenueRequestTelemetrySink
   ): Promise<{ records: FundingHistoryRecord[]; pageCount: number }> {
-    return this.getFundingHistoryPages(startTime, endTime, symbol);
+    return this.getFundingHistoryPages(startTime, endTime, symbol, onRequestTelemetry);
   }
 
   private async getFundingHistoryPages(
     startTime: number,
     endTime: number,
-    symbol?: string
+    symbol: string | undefined,
+    onRequestTelemetry: VenueRequestTelemetrySink | undefined
   ): Promise<{ records: FundingHistoryRecord[]; pageCount: number }> {
     const records: FundingHistoryRecord[] = [];
     const seen = new Set<string>();
@@ -112,7 +116,12 @@ export class BinanceClient {
       if (symbol !== undefined) {
         query.symbol = symbol;
       }
-      const payload = await this.getJson('/fapi/v1/fundingRate', query);
+      const payload = await this.getJson(
+        '/fapi/v1/fundingRate',
+        query,
+        'history',
+        onRequestTelemetry
+      );
       const page = this.parse(fundingHistoryResponseSchema, payload);
       pageCount += 1;
 
@@ -146,13 +155,13 @@ export class BinanceClient {
     }
   }
 
-  async getPremiumIndexes(): Promise<PremiumIndexRecord[]> {
-    const payload = await this.getJson('/fapi/v1/premiumIndex');
+  async getPremiumIndexes(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<PremiumIndexRecord[]> {
+    const payload = await this.getJson('/fapi/v1/premiumIndex', {}, 'current', onRequestTelemetry);
     return this.parse(premiumIndexResponseSchema, payload);
   }
 
-  async getFundingIntervals(): Promise<FundingIntervalInfo[]> {
-    const payload = await this.getJson('/fapi/v1/fundingInfo');
+  async getFundingIntervals(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<FundingIntervalInfo[]> {
+    const payload = await this.getJson('/fapi/v1/fundingInfo', {}, 'current', onRequestTelemetry);
     return this.parse(fundingInfoResponseSchema, payload);
   }
 
@@ -164,48 +173,78 @@ export class BinanceClient {
     return result.data;
   }
 
-  private async getJson(path: string, query: Record<string, string> = {}): Promise<unknown> {
+  private async getJson(
+    path: string,
+    query: Record<string, string>,
+    operation: 'current' | 'history',
+    onRequestTelemetry: VenueRequestTelemetrySink | undefined
+  ): Promise<unknown> {
     const url = new URL(path, this.baseUrl);
     for (const [key, value] of Object.entries(query)) {
       url.searchParams.set(key, value);
     }
 
-    for (let retryIndex = 0; ; retryIndex += 1) {
-      const signal = AbortSignal.timeout(this.timeoutMs);
-      try {
-        const response = await this.fetcher(url, { method: 'GET', signal });
-        if (response.ok) {
-          try {
-            return await response.json();
-          } catch (error) {
-            if (signal.aborted || (error instanceof Error && error.name === 'TimeoutError')) {
-              throw error;
+    const startedAt = Date.now();
+    let attempts = 0;
+    let retries = 0;
+    let outcome: 'success' | 'failure' = 'failure';
+    try {
+      for (let retryIndex = 0; ; retryIndex += 1) {
+        attempts += 1;
+        const signal = AbortSignal.timeout(this.timeoutMs);
+        try {
+          const response = await this.fetcher(url, { method: 'GET', signal });
+          if (response.ok) {
+            try {
+              const value = await response.json();
+              outcome = 'success';
+              return value;
+            } catch (error) {
+              if (signal.aborted || (error instanceof Error && error.name === 'TimeoutError')) {
+                throw error;
+              }
+              throw new BinanceRequestError('Binance response was not valid JSON');
             }
-            throw new BinanceRequestError('Binance response was not valid JSON');
           }
-        }
 
-        const retryable = response.status === 429 || response.status >= 500;
-        if (!retryable || retryIndex >= this.maxRetries) {
-          throw new BinanceRequestError(await this.responseErrorMessage(path, response));
-        }
-        await this.sleep(this.retryDelayMs(response, retryIndex));
-      } catch (error) {
-        if (error instanceof BinanceRequestError) {
-          throw error;
-        }
-        const timedOut = signal.aborted || (error instanceof Error && error.name === 'TimeoutError');
-        if (timedOut) {
-          if (retryIndex >= this.maxRetries) {
-            throw new BinanceTimeoutError(path);
+          const retryable = response.status === 429 || response.status >= 500;
+          if (!retryable || retryIndex >= this.maxRetries) {
+            throw new BinanceRequestError(await this.responseErrorMessage(path, response));
           }
+          retries += 1;
+          await this.sleep(this.retryDelayMs(response, retryIndex));
+        } catch (error) {
+          if (error instanceof BinanceRequestError) {
+            throw error;
+          }
+          const timedOut = signal.aborted || (error instanceof Error && error.name === 'TimeoutError');
+          if (timedOut) {
+            if (retryIndex >= this.maxRetries) {
+              throw new BinanceTimeoutError(path);
+            }
+            retries += 1;
+            await this.sleep(this.retryDelayMs(undefined, retryIndex));
+            continue;
+          }
+          if (retryIndex >= this.maxRetries) {
+            throw new BinanceRequestError(`Binance network request failed: GET ${path}`);
+          }
+          retries += 1;
           await this.sleep(this.retryDelayMs(undefined, retryIndex));
-          continue;
         }
-        if (retryIndex >= this.maxRetries) {
-          throw new BinanceRequestError(`Binance network request failed: GET ${path}`);
-        }
-        await this.sleep(this.retryDelayMs(undefined, retryIndex));
+      }
+    } finally {
+      try {
+        onRequestTelemetry?.({
+          venue: 'binance',
+          operation,
+          attempts,
+          retries,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          outcome
+        });
+      } catch {
+        // Observability must not alter Binance request behavior.
       }
     }
   }

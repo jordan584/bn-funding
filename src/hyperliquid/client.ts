@@ -5,11 +5,13 @@ import type {
   FundingVenueAdapter,
   VenueHistoryRequest,
   VenueHistoryResult,
+  VenueRequestTelemetrySink,
   VenueSnapshot
 } from '../domain.js';
 import {
   PublicJsonClient,
   type PublicJsonClientOptions,
+  requestTelemetryContext,
   VenueRequestError
 } from '../exchanges/http.js';
 import {
@@ -52,14 +54,18 @@ export class HyperliquidClient implements FundingVenueAdapter {
     this.http = new PublicJsonClient(httpOptions);
   }
 
-  async getCurrentSnapshot(): Promise<VenueSnapshot> {
+  async getCurrentSnapshot(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<VenueSnapshot> {
     const observedAt = this.now();
     if (!Number.isSafeInteger(observedAt)) {
       throw new VenueRequestError(this.id, 'Invalid Hyperliquid observation time');
     }
     const [metadata, contexts] = this.parse(
       hyperMetaAndContextsSchema,
-      await this.http.postJson('/info', { type: 'metaAndAssetCtxs' }),
+      await this.http.postJson(
+        '/info',
+        { type: 'metaAndAssetCtxs' },
+        requestTelemetryContext('current', onRequestTelemetry)
+      ),
       'Hyperliquid response validation failed'
     );
     if (metadata.universe.length !== contexts.length) {
@@ -103,7 +109,10 @@ export class HyperliquidClient implements FundingVenueAdapter {
     };
   }
 
-  async getFundingHistory(request: VenueHistoryRequest): Promise<VenueHistoryResult> {
+  async getFundingHistory(
+    request: VenueHistoryRequest,
+    onRequestTelemetry?: VenueRequestTelemetrySink
+  ): Promise<VenueHistoryResult> {
     validateHistoryWindow(request.startTime, request.endTime);
     const records: VenueHistoryResult['records'] = [];
     const seen = new Set<number>();
@@ -118,7 +127,7 @@ export class HyperliquidClient implements FundingVenueAdapter {
           coin: request.market.marketId,
           startTime,
           endTime: request.endTime
-        }),
+        }, requestTelemetryContext('history', onRequestTelemetry)),
         'Hyperliquid funding history validation failed'
       );
       pageCount += 1;

@@ -85,12 +85,15 @@ Before connecting Chat, verify all five live public-data paths after a build:
 npm run dry-run
 ```
 
-The structured completion log should report a market count for each of
-`binance`, `okx`, `hyperliquid`, `bybit`, and `bitget`. The output must contain
-exactly 20 ranked assets with five venue positions per asset (100 positions in
-total), and every asset must have values from at least two venues. Dry-run
-neither calls Google Chat nor reads or writes the state file. A normal one-off
-send and an explicitly forced one-off send are:
+The structured completion log should report market/current/request/page/retry
+counts and current-stage duration for each of `binance`, `okx`,
+`hyperliquid`, `bybit`, and `bitget`. It also reports normalization and alias
+counts, candidate coverage counts, sanitized Top20 APR/missing-reason data,
+selected-history records/coverage/duration, payload bytes, push result, and
+slot state. The output must contain exactly 20 ranked assets with five venue
+positions per asset (100 positions in total), and every asset must have values
+from at least two venues. Dry-run neither calls Google Chat nor reads or writes
+the state file. A normal one-off send and an explicitly forced one-off send are:
 
 ```bash
 npm run push:once
@@ -115,11 +118,18 @@ must be the equal-weight average of estimated next-Funding APR across the five
 approved venues, using only assets covered by at least two venues. On both
 desktop and mobile, verify all 20 assets are visible and every asset shows all
 five venue positions. A listed position shows estimated next Funding, its
-period and APR, plus the realized seven-day daily average and APR. `--` means
-the asset is not listed on that venue; verify it in the affected venue rows.
-`*` means that venue's available history is shorter than seven days. Confirm
-the card footnotes explain that next Funding is the current estimate with APR
-in parentheses and that `*` marks history shorter than seven days.
+period and APR, plus the realized seven-day daily average and APR. The exact
+missing-data forms are distinct:
+
+- `下次 --｜7日均 --` means the asset is absent from that venue in the complete
+  current snapshot.
+- A valid `下次` value beside `7日均 --*` means the market is present but is too
+  new to have one complete settled Funding interval.
+- A numeric `7日均` ending in `*` means usable settled history exists but covers
+  less than seven days.
+
+Confirm the card footnotes explain that next Funding is the current estimate
+with APR in parentheses and that `*` marks history shorter than seven days.
 Remove the test Webhook from the secret manager or the PM2/server environment
 after validation; it must not remain in shell history or a tracked file.
 

@@ -83,3 +83,17 @@ test('adds a sign only to positive Decimal values', () => {
   assert.equal(signedAprPercent(new Decimal('0')), '0.00%');
   assert.equal(signedAprPercent(new Decimal('-0.12345')), '-12.35%');
 });
+
+test('distinguishes an absent venue from a present market too new for settled history', () => {
+  const row = fullCoverageRow();
+  row.coverageCount = 1;
+  row.venues = {
+    binance: metric('binance', '0.0001', 8, null, true)
+  };
+
+  const text = renderLeaderboardText(leaderboard([row]));
+
+  assert.match(text, /Bn 下次 \+0\.0100%\/8h \(\+10\.95%\)｜7日均 --\*/);
+  assert.match(text, /OKX 下次 --｜7日均 --/);
+  assert.doesNotMatch(text, /OKX 下次 --｜7日均 --\*/);
+});

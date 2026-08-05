@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import type { VenueRequestTelemetry } from '../../src/domain.js';
 import { PublicJsonClient, VenueRequestError, VenueTimeoutError } from '../../src/exchanges/http.js';
 import { jsonResponse, queuedFetch } from '../helpers/fetch.js';
 
@@ -125,4 +126,62 @@ test('times out while reading a final non-retryable response body', async () => 
   } finally {
     clearTimeout(deadline!);
   }
+});
+
+test('emits one request-scoped telemetry record per concurrent logical operation', async () => {
+  const attempts = new Map<string, number>();
+  const telemetry: VenueRequestTelemetry[] = [];
+  const client = new PublicJsonClient({
+    venue: 'okx',
+    baseUrl: new URL('https://www.okx.com'),
+    fetch: async (input) => {
+      const path = new URL(input instanceof Request ? input.url : input).pathname;
+      const attempt = (attempts.get(path) ?? 0) + 1;
+      attempts.set(path, attempt);
+      if (path === '/retrying' && attempt === 1) return new Response('busy', { status: 503 });
+      return jsonResponse({ path });
+    },
+    sleep: async () => {},
+    random: () => 0
+  });
+  const context = {
+    operation: 'history' as const,
+    onTelemetry: (event: VenueRequestTelemetry) => { telemetry.push(event); }
+  };
+
+  await Promise.all([
+    client.getJson('/retrying', {}, context),
+    client.getJson('/single', {}, context)
+  ]);
+
+  assert.equal(telemetry.length, 2);
+  assert.deepEqual(telemetry.map(({ attempts: count }) => count).sort(), [1, 2]);
+  assert.deepEqual(telemetry.map(({ retries }) => retries).sort(), [0, 1]);
+  assert.equal(telemetry.every((event) => (
+    event.venue === 'okx'
+    && event.operation === 'history'
+    && event.outcome === 'success'
+    && typeof event.durationMs === 'number'
+    && !('path' in event)
+    && !('body' in event)
+  )), true);
+});
+
+test('emits sanitized failure telemetry after a non-retryable response', async () => {
+  const telemetry: VenueRequestTelemetry[] = [];
+  const client = new PublicJsonClient({
+    venue: 'bitget',
+    baseUrl: new URL('https://api.bitget.com'),
+    fetch: queuedFetch([new Response('sensitive response body', { status: 400 })], [])
+  });
+
+  await assert.rejects(client.getJson('/bad', { secret: 'query-secret' }, {
+    operation: 'current',
+    onTelemetry: (event) => { telemetry.push(event); }
+  }), VenueRequestError);
+
+  assert.deepEqual(telemetry.map(({ venue, operation, attempts, retries, outcome }) => ({
+    venue, operation, attempts, retries, outcome
+  })), [{ venue: 'bitget', operation: 'current', attempts: 1, retries: 0, outcome: 'failure' }]);
+  assert.doesNotMatch(JSON.stringify(telemetry), /sensitive|query-secret|\/bad/);
 });

@@ -5,12 +5,14 @@ import type {
   VenueFundingSnapshot,
   VenueHistoryRequest,
   VenueHistoryResult,
+  VenueRequestTelemetrySink,
   VenueSnapshot
 } from '../domain.js';
 import { mapWithConcurrency } from '../exchanges/concurrency.js';
 import {
   PublicJsonClient,
   type PublicJsonClientOptions,
+  requestTelemetryContext,
   VenueRequestError
 } from '../exchanges/http.js';
 import {
@@ -63,10 +65,11 @@ export class OkxClient implements FundingVenueAdapter {
     this.http = new PublicJsonClient(httpOptions);
   }
 
-  async getCurrentSnapshot(): Promise<VenueSnapshot> {
+  async getCurrentSnapshot(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<VenueSnapshot> {
+    const telemetry = requestTelemetryContext('current', onRequestTelemetry);
     const instruments = this.parseEnvelope(
       okxInstrumentsEnvelopeSchema,
-      await this.http.getJson('/api/v5/public/instruments', { instType: 'SWAP' })
+      await this.http.getJson('/api/v5/public/instruments', { instType: 'SWAP' }, telemetry)
     );
     const eligibleInstruments = instruments.filter((instrument) => (
       instrument.instType === 'SWAP'
@@ -93,7 +96,7 @@ export class OkxClient implements FundingVenueAdapter {
       async (instrument): Promise<VenueFundingSnapshot> => {
         const funding = this.parseEnvelope(
           okxCurrentFundingEnvelopeSchema,
-          await this.http.getJson('/api/v5/public/funding-rate', { instId: instrument.instId })
+          await this.http.getJson('/api/v5/public/funding-rate', { instId: instrument.instId }, telemetry)
         );
         const matchingFunding = funding.filter(({ instId }) => instId === instrument.instId);
         if (matchingFunding.length !== 1) {
@@ -133,7 +136,11 @@ export class OkxClient implements FundingVenueAdapter {
     };
   }
 
-  async getFundingHistory(request: VenueHistoryRequest): Promise<VenueHistoryResult> {
+  async getFundingHistory(
+    request: VenueHistoryRequest,
+    onRequestTelemetry?: VenueRequestTelemetrySink
+  ): Promise<VenueHistoryResult> {
+    const telemetry = requestTelemetryContext('history', onRequestTelemetry);
     validateHistoryWindow(request.startTime, request.endTime);
     const records: VenueHistoryResult['records'] = [];
     const seen = new Set<string>();
@@ -148,7 +155,7 @@ export class OkxClient implements FundingVenueAdapter {
           before: String(request.startTime),
           after: String(after),
           limit: String(this.historyPageLimit)
-        })
+        }, telemetry)
       );
       pageCount += 1;
       if (page.length === 0) break;

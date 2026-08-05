@@ -55,7 +55,7 @@ function rankedLeaderboardWithTwoVenuesPerRow(
       venue,
       venue === 'binance' || venue === 'okx'
         ? assets.map((asset) => market(venue, asset, marketOverrides))
-        : []
+        : [market(venue, `ONLY${venue}`)]
     ))
   });
 }
@@ -115,8 +115,20 @@ test('requests history only for venue markets present on the selected Top20', as
   assert.equal(calls.every(({ startTime, endTime }) => startTime === AS_OF - 7 * DAY + 1 && endTime === AS_OF), true);
   assert.equal(result.leaderboard.rows[0]!.venues.binance!.sevenDayAverageDailyRate!.toString(), '0.000042857142857142857143');
   assert.equal(result.leaderboard.rows[0]!.venues.binance!.sevenDayApr!.toString(), '0.015642857142857142857');
-  assert.deepEqual(result.venueStats.binance, { requestCount: 20, pageCount: 20, recordCount: 40 });
-  assert.deepEqual(result.venueStats.hyperliquid, { requestCount: 0, pageCount: 0, recordCount: 0 });
+  assert.equal(result.venueStats.binance.selectedMarketCount, 20);
+  assert.equal(result.venueStats.binance.requestCount, 20);
+  assert.equal(result.venueStats.binance.pageCount, 20);
+  assert.equal(result.venueStats.binance.recordCount, 40);
+  assert.equal(result.venueStats.binance.coverageDays.minimum?.toString(), '7');
+  assert.equal(result.venueStats.binance.coverageDays.maximum?.toString(), '7');
+  assert.equal(result.venueStats.binance.coverageDays.average?.toString(), '7');
+  assert.equal(typeof result.venueStats.binance.stageDurationMs, 'number');
+  assert.deepEqual(result.venueStats.hyperliquid.coverageDays, {
+    minimum: null,
+    maximum: null,
+    average: null
+  });
+  assert.equal(result.venueStats.hyperliquid.selectedMarketCount, 0);
   assert.equal(leaderboard.rows[0]!.venues.binance!.sevenDayAverageDailyRate, null);
 });
 

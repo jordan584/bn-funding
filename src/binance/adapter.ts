@@ -2,9 +2,10 @@ import type {
   FundingVenueAdapter,
   VenueHistoryRequest,
   VenueHistoryResult,
+  VenueRequestTelemetrySink,
   VenueSnapshot
 } from '../domain.js';
-import { BinanceClient, type BinanceClientOptions } from './client.js';
+import { BinanceClient, type BinanceClientOptions, BinanceRequestError } from './client.js';
 
 const DEFAULT_FUNDING_INTERVAL_HOURS = 8;
 
@@ -16,27 +17,42 @@ export class BinanceVenueAdapter implements FundingVenueAdapter {
     this.client = new BinanceClient(options);
   }
 
-  async getCurrentSnapshot(): Promise<VenueSnapshot> {
+  async getCurrentSnapshot(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<VenueSnapshot> {
     const [observedAt, symbols, premiumIndexes, fundingIntervals] = await Promise.all([
-      this.client.getServerTime(),
-      this.client.getExchangeSymbols(),
-      this.client.getPremiumIndexes(),
-      this.client.getFundingIntervals()
+      this.client.getServerTime(onRequestTelemetry),
+      this.client.getExchangeSymbols(onRequestTelemetry),
+      this.client.getPremiumIndexes(onRequestTelemetry),
+      this.client.getFundingIntervals(onRequestTelemetry)
     ]);
-    const premiumBySymbol = new Map(premiumIndexes.map((premium) => [premium.symbol, premium]));
-    const intervalBySymbol = new Map(fundingIntervals.map((interval) => [
-      interval.symbol,
-      interval.fundingIntervalHours
-    ]));
     const eligibleSymbols = symbols.filter((symbol) => (
       symbol.status === 'TRADING'
       && symbol.contractType === 'PERPETUAL'
       && symbol.quoteAsset === 'USDT'
     ));
+    if (eligibleSymbols.length === 0) {
+      throw new BinanceRequestError('No eligible Binance USDT perpetuals');
+    }
+    const eligibleSymbolIds = new Set(eligibleSymbols.map(({ symbol }) => symbol));
+    const premiumBySymbol = new Map<string, typeof premiumIndexes[number]>();
+    for (const premium of premiumIndexes) {
+      if (!eligibleSymbolIds.has(premium.symbol)) continue;
+      if (premiumBySymbol.has(premium.symbol)) {
+        throw new BinanceRequestError(`Duplicate Binance premium for ${premium.symbol}`);
+      }
+      premiumBySymbol.set(premium.symbol, premium);
+    }
+    const intervalBySymbol = new Map<string, number>();
+    for (const interval of fundingIntervals) {
+      if (!eligibleSymbolIds.has(interval.symbol)) continue;
+      if (intervalBySymbol.has(interval.symbol)) {
+        throw new BinanceRequestError(`Duplicate Binance interval for ${interval.symbol}`);
+      }
+      intervalBySymbol.set(interval.symbol, interval.fundingIntervalHours);
+    }
     const markets = eligibleSymbols.map((symbol) => {
       const premium = premiumBySymbol.get(symbol.symbol);
       if (premium === undefined) {
-        throw new Error(`Missing Binance current Funding for ${symbol.symbol}`);
+        throw new BinanceRequestError(`Missing Binance current Funding for ${symbol.symbol}`);
       }
       return {
         venue: this.id,
@@ -59,11 +75,15 @@ export class BinanceVenueAdapter implements FundingVenueAdapter {
     };
   }
 
-  async getFundingHistory(request: VenueHistoryRequest): Promise<VenueHistoryResult> {
+  async getFundingHistory(
+    request: VenueHistoryRequest,
+    onRequestTelemetry?: VenueRequestTelemetrySink
+  ): Promise<VenueHistoryResult> {
     const { records, pageCount } = await this.client.getFundingHistoryForMarket(
       request.market.marketId,
       request.startTime,
-      request.endTime
+      request.endTime,
+      onRequestTelemetry
     );
     return {
       records: records

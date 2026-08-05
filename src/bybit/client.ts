@@ -6,11 +6,13 @@ import type {
   VenueFundingSnapshot,
   VenueHistoryRequest,
   VenueHistoryResult,
+  VenueRequestTelemetrySink,
   VenueSnapshot
 } from '../domain.js';
 import {
   PublicJsonClient,
   type PublicJsonClientOptions,
+  requestTelemetryContext,
   VenueRequestError
 } from '../exchanges/http.js';
 import {
@@ -53,13 +55,13 @@ export class BybitClient implements FundingVenueAdapter {
     this.http = new PublicJsonClient(httpOptions);
   }
 
-  async getCurrentSnapshot(): Promise<VenueSnapshot> {
+  async getCurrentSnapshot(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<VenueSnapshot> {
     const observedAt = this.now();
     if (!Number.isSafeInteger(observedAt)) {
       throw new VenueRequestError(this.id, 'Invalid Bybit observation time');
     }
 
-    const { instruments, pageCount } = await this.getInstruments();
+    const { instruments, pageCount } = await this.getInstruments(onRequestTelemetry);
     const eligibleInstruments = instruments.filter((instrument) => (
       instrument.contractType === 'LinearPerpetual'
       && instrument.status === 'Trading'
@@ -79,7 +81,11 @@ export class BybitClient implements FundingVenueAdapter {
 
     const tickers = this.parseEnvelope(
       bybitTickersEnvelopeSchema,
-      await this.http.getJson('/v5/market/tickers', { category: 'linear' })
+      await this.http.getJson(
+        '/v5/market/tickers',
+        { category: 'linear' },
+        requestTelemetryContext('current', onRequestTelemetry)
+      )
     );
     if (tickers.category !== 'linear') {
       throw new VenueRequestError(this.id, 'Invalid Bybit ticker category');
@@ -130,7 +136,10 @@ export class BybitClient implements FundingVenueAdapter {
     };
   }
 
-  async getFundingHistory(request: VenueHistoryRequest): Promise<VenueHistoryResult> {
+  async getFundingHistory(
+    request: VenueHistoryRequest,
+    onRequestTelemetry?: VenueRequestTelemetrySink
+  ): Promise<VenueHistoryResult> {
     validateHistoryWindow(request.startTime, request.endTime);
     const response = this.parseEnvelope(
       bybitFundingHistoryEnvelopeSchema,
@@ -140,7 +149,7 @@ export class BybitClient implements FundingVenueAdapter {
         startTime: String(request.startTime),
         endTime: String(request.endTime),
         limit: String(MAX_HISTORY_RECORDS)
-      })
+      }, requestTelemetryContext('history', onRequestTelemetry))
     );
     if (response.category !== 'linear') {
       throw new VenueRequestError(this.id, 'Invalid Bybit funding history category');
@@ -181,7 +190,7 @@ export class BybitClient implements FundingVenueAdapter {
     };
   }
 
-  private async getInstruments(): Promise<{
+  private async getInstruments(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<{
     instruments: Array<z.infer<typeof bybitInstrumentsEnvelopeSchema>['result']['list'][number]>;
     pageCount: number;
   }> {
@@ -195,7 +204,11 @@ export class BybitClient implements FundingVenueAdapter {
       if (cursor !== undefined) query.cursor = cursor;
       const page = this.parseEnvelope(
         bybitInstrumentsEnvelopeSchema,
-        await this.http.getJson('/v5/market/instruments-info', query)
+        await this.http.getJson(
+          '/v5/market/instruments-info',
+          query,
+          requestTelemetryContext('current', onRequestTelemetry)
+        )
       );
       pageCount += 1;
       instruments.push(...page.list);

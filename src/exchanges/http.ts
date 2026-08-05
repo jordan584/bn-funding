@@ -1,4 +1,8 @@
-import type { VenueId } from '../domain.js';
+import type {
+  FundingDataOperation,
+  VenueId,
+  VenueRequestTelemetrySink
+} from '../domain.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_RETRIES = 3;
@@ -30,6 +34,18 @@ export interface PublicJsonClientOptions {
   random?: () => number;
 }
 
+export interface PublicJsonTelemetryContext {
+  operation: FundingDataOperation;
+  onTelemetry?: VenueRequestTelemetrySink;
+}
+
+export function requestTelemetryContext(
+  operation: FundingDataOperation,
+  onTelemetry: VenueRequestTelemetrySink | undefined
+): PublicJsonTelemetryContext | undefined {
+  return onTelemetry === undefined ? undefined : { operation, onTelemetry };
+}
+
 export class PublicJsonClient {
   private nextRequestAt = 0;
   private pacingTail: Promise<void> = Promise.resolve();
@@ -55,74 +71,110 @@ export class PublicJsonClient {
     this.random = options.random ?? Math.random;
   }
 
-  async getJson(path: string, query: Record<string, string> = {}): Promise<unknown> {
-    return this.requestJson('GET', path, query, undefined);
+  async getJson(
+    path: string,
+    query: Record<string, string> = {},
+    telemetry?: PublicJsonTelemetryContext
+  ): Promise<unknown> {
+    return this.requestJson('GET', path, query, undefined, telemetry);
   }
 
-  async postJson(path: string, body: unknown): Promise<unknown> {
-    return this.requestJson('POST', path, {}, body);
+  async postJson(
+    path: string,
+    body: unknown,
+    telemetry?: PublicJsonTelemetryContext
+  ): Promise<unknown> {
+    return this.requestJson('POST', path, {}, body, telemetry);
   }
 
   private async requestJson(
     method: 'GET' | 'POST',
     path: string,
     query: Record<string, string>,
-    body: unknown
+    body: unknown,
+    telemetry: PublicJsonTelemetryContext | undefined
   ): Promise<unknown> {
     const url = new URL(path, this.baseUrl);
     for (const [key, value] of Object.entries(query)) {
       url.searchParams.set(key, value);
     }
     const errorPath = url.pathname;
+    const startedAt = Date.now();
+    let attempts = 0;
+    let retries = 0;
+    let outcome: 'success' | 'failure' = 'failure';
 
-    for (let retryIndex = 0; ; retryIndex += 1) {
-      await this.waitForPacing();
-      const signal = AbortSignal.timeout(this.timeoutMs);
-      try {
-        const response = await this.withTimeout(
-          this.fetcher(url, this.requestInit(method, body, signal)),
-          signal
-        );
-        if (response.ok) {
-          try {
-            return await this.withTimeout(response.json(), signal);
-          } catch (error) {
-            if (isTimeout(error, signal)) {
-              throw error;
+    try {
+      for (let retryIndex = 0; ; retryIndex += 1) {
+        attempts += 1;
+        await this.waitForPacing();
+        const signal = AbortSignal.timeout(this.timeoutMs);
+        try {
+          const response = await this.withTimeout(
+            this.fetcher(url, this.requestInit(method, body, signal)),
+            signal
+          );
+          if (response.ok) {
+            try {
+              const value = await this.withTimeout(response.json(), signal);
+              outcome = 'success';
+              return value;
+            } catch (error) {
+              if (isTimeout(error, signal)) {
+                throw error;
+              }
+              throw new VenueRequestError(
+                this.venue,
+                `${this.venue} response was not valid JSON: ${method} ${errorPath}`
+              );
             }
+          }
+
+          const retryable = response.status === 429 || response.status >= 500;
+          if (!retryable || retryIndex >= this.maxRetries) {
             throw new VenueRequestError(
               this.venue,
-              `${this.venue} response was not valid JSON: ${method} ${errorPath}`
+              await this.responseErrorMessage(method, errorPath, response, signal)
             );
           }
-        }
-
-        const retryable = response.status === 429 || response.status >= 500;
-        if (!retryable || retryIndex >= this.maxRetries) {
-          throw new VenueRequestError(
-            this.venue,
-            await this.responseErrorMessage(method, errorPath, response, signal)
-          );
-        }
-        await this.sleep(this.retryDelayMs(response, retryIndex));
-      } catch (error) {
-        if (error instanceof VenueRequestError) {
-          throw error;
-        }
-        if (isTimeout(error, signal)) {
-          if (retryIndex >= this.maxRetries) {
-            throw new VenueTimeoutError(this.venue, method, errorPath);
+          retries += 1;
+          await this.sleep(this.retryDelayMs(response, retryIndex));
+        } catch (error) {
+          if (error instanceof VenueRequestError) {
+            throw error;
           }
+          if (isTimeout(error, signal)) {
+            if (retryIndex >= this.maxRetries) {
+              throw new VenueTimeoutError(this.venue, method, errorPath);
+            }
+            retries += 1;
+            await this.sleep(this.retryDelayMs(undefined, retryIndex));
+            continue;
+          }
+          if (retryIndex >= this.maxRetries) {
+            throw new VenueRequestError(
+              this.venue,
+              `${this.venue} network request failed: ${method} ${errorPath}`
+            );
+          }
+          retries += 1;
           await this.sleep(this.retryDelayMs(undefined, retryIndex));
-          continue;
         }
-        if (retryIndex >= this.maxRetries) {
-          throw new VenueRequestError(
-            this.venue,
-            `${this.venue} network request failed: ${method} ${errorPath}`
-          );
+      }
+    } finally {
+      if (telemetry?.onTelemetry !== undefined) {
+        try {
+          telemetry.onTelemetry({
+            venue: this.venue,
+            operation: telemetry.operation,
+            attempts,
+            retries,
+            durationMs: Math.max(0, Date.now() - startedAt),
+            outcome
+          });
+        } catch {
+          // Observability must not alter public-data request behavior.
         }
-        await this.sleep(this.retryDelayMs(undefined, retryIndex));
       }
     }
   }

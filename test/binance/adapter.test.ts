@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { BinanceVenueAdapter } from '../../src/binance/adapter.js';
+import { BinanceRequestError } from '../../src/binance/client.js';
 import { buildCompositeFundingLeaderboard } from '../../src/funding/composite.js';
 import { venueMarket, venueSnapshot } from '../helpers/fixtures.js';
 import { jsonResponse, queuedFetch, type SeenRequest } from '../helpers/fetch.js';
@@ -94,9 +95,9 @@ test('carries Unicode letter assets from the Binance adapter through determinist
     snapshots: [
       binance,
       venueSnapshot('okx', sharedAssets.map((asset) => venueMarket('okx', asset))),
-      venueSnapshot('hyperliquid', []),
-      venueSnapshot('bybit', []),
-      venueSnapshot('bitget', [])
+      venueSnapshot('hyperliquid', [venueMarket('hyperliquid', 'ONLYHYPER')]),
+      venueSnapshot('bybit', [venueMarket('bybit', 'ONLYBYBIT')]),
+      venueSnapshot('bitget', [venueMarket('bitget', 'ONLYBITGET')])
     ]
   });
 
@@ -120,6 +121,62 @@ test('fails the whole Binance snapshot when an eligible contract lacks current f
 
   await assert.rejects(adapter.getCurrentSnapshot(), /Missing Binance current Funding for BTCUSDT/);
 });
+
+test('fails closed with a typed request error when Binance has no eligible market', async () => {
+  const adapter = new BinanceVenueAdapter({
+    baseUrl,
+    fetch: queuedFetch([
+      jsonResponse({ serverTime: AS_OF }),
+      jsonResponse({ symbols: [] }),
+      jsonResponse([]),
+      jsonResponse([])
+    ], [])
+  });
+
+  await assert.rejects(adapter.getCurrentSnapshot(), (error: unknown) => (
+    error instanceof BinanceRequestError
+    && /No eligible Binance USDT perpetuals/.test(error.message)
+  ));
+});
+
+for (const [kind, premiumRows, intervalRows] of [
+  [
+    'premium',
+    [
+      { symbol: 'BTCUSDT', lastFundingRate: '0.0001', nextFundingTime: AS_OF + 8 * HOUR },
+      { symbol: 'BTCUSDT', lastFundingRate: '0.0002', nextFundingTime: AS_OF + 8 * HOUR }
+    ],
+    []
+  ],
+  [
+    'interval',
+    [{ symbol: 'BTCUSDT', lastFundingRate: '0.0001', nextFundingTime: AS_OF + 8 * HOUR }],
+    [
+      { symbol: 'BTCUSDT', fundingIntervalHours: 8 },
+      { symbol: 'BTCUSDT', fundingIntervalHours: 4 }
+    ]
+  ]
+] as const) {
+  test(`rejects duplicate eligible Binance ${kind} rows instead of accepting the last row`, async () => {
+    const adapter = new BinanceVenueAdapter({
+      baseUrl,
+      fetch: queuedFetch([
+        jsonResponse({ serverTime: AS_OF }),
+        jsonResponse({ symbols: [{
+          symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT', contractType: 'PERPETUAL',
+          status: 'TRADING', onboardDate: AS_OF - DAY
+        }] }),
+        jsonResponse(premiumRows),
+        jsonResponse(intervalRows)
+      ], [])
+    });
+
+    await assert.rejects(adapter.getCurrentSnapshot(), (error: unknown) => (
+      error instanceof BinanceRequestError
+      && new RegExp(`Duplicate Binance ${kind} for BTCUSDT`).test(error.message)
+    ));
+  });
+}
 
 test('fetches and deduplicates history only for the selected Binance market', async () => {
   const seenRequests: SeenRequest[] = [];

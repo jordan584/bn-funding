@@ -1,5 +1,8 @@
 import { BinanceRequestError, BinanceTimeoutError } from './binance/client.js';
-import { buildFundingChatMessage } from './chat/multi-venue-cards.js';
+import {
+  buildFundingChatMessage,
+  GoogleChatPayloadSizeError
+} from './chat/multi-venue-cards.js';
 import {
   GoogleChatClient,
   GoogleChatRequestError,
@@ -7,15 +10,25 @@ import {
 } from './chat/client.js';
 import {
   VENUE_IDS,
+  type CompositeFundingRow,
   type FundingVenueAdapter,
   type JobResult,
   type Logger,
   type RunFundingJobOptions,
-  type VenueId
+  type VenueId,
+  type VenueRequestTelemetry
 } from './domain.js';
 import { VenueRequestError, VenueTimeoutError } from './exchanges/http.js';
-import { buildCompositeFundingLeaderboard } from './funding/composite.js';
-import { hydrateSevenDayFunding } from './funding/history.js';
+import {
+  assertCompleteVenueSnapshots,
+  buildCompositeFundingLeaderboard,
+  type CoverageCountsTelemetry,
+  type NormalizationTelemetry
+} from './funding/composite.js';
+import {
+  hydrateSevenDayFunding,
+  type HistoryHydrationVenueStats
+} from './funding/history.js';
 import { renderLeaderboardText } from './funding/multi-venue-format.js';
 import { FileRunStateStore } from './state/store.js';
 
@@ -35,6 +48,35 @@ interface StageDurations {
   historyFetchDurationMs: number;
   cardBuildDurationMs: number;
   webhookDurationMs: number;
+}
+
+interface VenueOperationalFields {
+  marketCount: number;
+  currentFundingCount: number;
+  currentRequestCount: number;
+  currentPageCount: number;
+  currentRetryCount: number;
+  currentDurationMs: number;
+  historySelectedMarketCount: number;
+  historyRequestCount: number;
+  historyPageCount: number;
+  historyRetryCount: number;
+  historyRecordCount: number;
+  historyCoverageDays: { minimum: string | null; maximum: string | null; average: string | null };
+  historyStageDurationMs: number;
+}
+
+interface JobOperationalFields {
+  candidateCount: number | null;
+  rowCount: number | null;
+  normalization: NormalizationTelemetry;
+  candidateCoverageCounts: CoverageCountsTelemetry;
+  top20CoverageCounts: CoverageCountsTelemetry;
+  top20: Array<Record<string, unknown>>;
+  payloadBytes: number | null;
+  pushResult: 'not-attempted' | 'attempted' | 'failed' | 'sent' | 'skipped-dry-run';
+  slotState: 'unknown' | 'eligible' | 'already-sent' | 'dry-run-isolated' | 'commit-pending' | 'commit-failed' | 'committed';
+  venues: Record<VenueId, VenueOperationalFields>;
 }
 
 export interface FundingJobDeps {
@@ -86,12 +128,7 @@ function failureCategory(stage: JobStage, error: unknown): string {
   }
 }
 
-function coverageCounts(rows: Array<{ coverageCount: number }>): {
-  two: number;
-  three: number;
-  four: number;
-  five: number;
-} {
+function coverageCounts(rows: readonly { coverageCount: number }[]): CoverageCountsTelemetry {
   const counts = { two: 0, three: 0, four: 0, five: 0 };
   for (const row of rows) {
     if (row.coverageCount === 2) counts.two += 1;
@@ -102,6 +139,88 @@ function coverageCounts(rows: Array<{ coverageCount: number }>): {
   return counts;
 }
 
+function initialOperationalFields(dryRun: boolean): JobOperationalFields {
+  return {
+    candidateCount: null,
+    rowCount: null,
+    normalization: {
+      beforeAssetCount: 0,
+      afterAssetCount: 0,
+      explicitAliasCount: 0,
+      conflictCount: 0
+    },
+    candidateCoverageCounts: { two: 0, three: 0, four: 0, five: 0 },
+    top20CoverageCounts: { two: 0, three: 0, four: 0, five: 0 },
+    top20: [],
+    payloadBytes: null,
+    pushResult: 'not-attempted',
+    slotState: dryRun ? 'dry-run-isolated' : 'unknown',
+    venues: Object.fromEntries(VENUE_IDS.map((venue) => [venue, {
+      marketCount: 0,
+      currentFundingCount: 0,
+      currentRequestCount: 0,
+      currentPageCount: 0,
+      currentRetryCount: 0,
+      currentDurationMs: 0,
+      historySelectedMarketCount: 0,
+      historyRequestCount: 0,
+      historyPageCount: 0,
+      historyRetryCount: 0,
+      historyRecordCount: 0,
+      historyCoverageDays: { minimum: null, maximum: null, average: null },
+      historyStageDurationMs: 0
+    }])) as Record<VenueId, VenueOperationalFields>
+  };
+}
+
+function top20Telemetry(rows: readonly CompositeFundingRow[]): Array<Record<string, unknown>> {
+  return rows.map((row) => ({
+    rank: row.rank,
+    asset: row.asset,
+    compositeNextApr: row.compositeNextApr.toString(),
+    coverageCount: row.coverageCount,
+    venues: Object.fromEntries(VENUE_IDS.map((venue) => [venue,
+      row.venues[venue] === undefined
+        ? { status: 'missing', reason: 'not-listed' }
+        : { status: 'present' }
+    ]))
+  }));
+}
+
+function applyRequestTelemetry(
+  fields: JobOperationalFields,
+  telemetry: VenueRequestTelemetry
+): void {
+  const venue = fields.venues[telemetry.venue];
+  if (telemetry.operation === 'current') {
+    venue.currentRequestCount += 1;
+    venue.currentRetryCount += telemetry.retries;
+    return;
+  }
+  venue.historyRequestCount += 1;
+  venue.historyRetryCount += telemetry.retries;
+}
+
+function applyHistoryProgress(
+  fields: JobOperationalFields,
+  stats: Record<VenueId, HistoryHydrationVenueStats>
+): void {
+  for (const venue of VENUE_IDS) {
+    const source = stats[venue];
+    const target = fields.venues[venue];
+    target.historySelectedMarketCount = source.selectedMarketCount;
+    target.historyRequestCount = Math.max(target.historyRequestCount, source.requestCount);
+    target.historyPageCount = source.pageCount;
+    target.historyRecordCount = source.recordCount;
+    target.historyCoverageDays = {
+      minimum: source.coverageDays.minimum?.toString() ?? null,
+      maximum: source.coverageDays.maximum?.toString() ?? null,
+      average: source.coverageDays.average?.toString() ?? null
+    };
+    target.historyStageDurationMs = source.stageDurationMs;
+  }
+}
+
 export async function runFundingJob(
   deps: FundingJobDeps,
   options: RunFundingJobOptions
@@ -109,7 +228,7 @@ export async function runFundingJob(
   const startedAtMs = deps.now();
   let currentStage: JobStage = options.dryRun ? 'current-fetch' : 'state-lock';
   let asOf: number | undefined;
-  let operationalFields: Record<string, unknown> = {};
+  const operationalFields = initialOperationalFields(options.dryRun);
   const stageDurations: StageDurations = {
     currentFetchDurationMs: 0,
     rankDurationMs: 0,
@@ -151,54 +270,84 @@ export async function runFundingJob(
       currentStage = 'state-check';
       const lastSuccessfulSlot = await deps.state.getLastSuccessfulSlot();
       if (!options.force && lastSuccessfulSlot === options.slot.key) {
+        operationalFields.slotState = 'already-sent';
         return {
           status: 'skipped',
           slot: options.slot.key,
           reason: 'already-sent'
         };
       }
+      operationalFields.slotState = 'eligible';
     }
 
     const snapshots = await measureAsync(
       'current-fetch',
       'currentFetchDurationMs',
-      () => Promise.all(VENUE_IDS.map((venue) => deps.venues[venue].getCurrentSnapshot()))
+      async () => {
+        const settled = await Promise.allSettled(
+          VENUE_IDS.map(async (venue) => {
+            const venueStartedAt = deps.now();
+            try {
+              const snapshot = await deps.venues[venue].getCurrentSnapshot((telemetry) => {
+                applyRequestTelemetry(operationalFields, telemetry);
+              });
+              const fields = operationalFields.venues[venue];
+              fields.marketCount = snapshot.stats.marketCount;
+              fields.currentFundingCount = snapshot.markets.length;
+              fields.currentRequestCount = Math.max(fields.currentRequestCount, snapshot.stats.requestCount);
+              fields.currentPageCount = snapshot.stats.pageCount;
+              return snapshot;
+            } finally {
+              operationalFields.venues[venue].currentDurationMs = Math.max(
+                0,
+                deps.now() - venueStartedAt
+              );
+            }
+          })
+        );
+        return settled.map((result) => {
+          if (result.status === 'rejected') throw result.reason;
+          return result.value;
+        });
+      }
     );
     asOf = deps.now();
+    assertCompleteVenueSnapshots(snapshots, asOf);
     const ranked = measureSync('rank', 'rankDurationMs', () =>
-      buildCompositeFundingLeaderboard({ asOf: asOf!, snapshots })
+      buildCompositeFundingLeaderboard({
+        asOf: asOf!,
+        snapshots,
+        onTelemetry: (telemetry) => {
+          operationalFields.normalization = telemetry.normalization;
+          operationalFields.candidateCoverageCounts = telemetry.candidateCoverageCounts;
+        }
+      })
     );
+    operationalFields.candidateCount = ranked.candidateCount;
+    operationalFields.rowCount = ranked.rows.length;
+    operationalFields.top20CoverageCounts = coverageCounts(ranked.rows);
+    operationalFields.top20 = top20Telemetry(ranked.rows);
     const hydrated = await measureAsync('history-fetch', 'historyFetchDurationMs', () =>
       hydrateSevenDayFunding({
         asOf: asOf!,
         leaderboard: ranked,
-        adapters: deps.venues
+        adapters: deps.venues,
+        now: deps.now,
+        onRequestTelemetry: (telemetry) => {
+          applyRequestTelemetry(operationalFields, telemetry);
+        },
+        onProgress: (stats) => {
+          applyHistoryProgress(operationalFields, stats);
+        }
       })
     );
     const message = measureSync('card-build', 'cardBuildDurationMs', () =>
       buildFundingChatMessage(hydrated.leaderboard)
     );
-    const payloadBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
-    operationalFields = {
-      candidateCount: ranked.candidateCount,
-      rowCount: 20,
-      coverageCounts: coverageCounts(hydrated.leaderboard.rows),
-      payloadBytes,
-      venues: Object.fromEntries(VENUE_IDS.map((venue) => {
-        const current = ranked.venueStats[venue];
-        const history = hydrated.venueStats[venue];
-        return [venue, {
-          marketCount: current.marketCount,
-          currentRequestCount: current.requestCount,
-          currentPageCount: current.pageCount,
-          historyRequestCount: history.requestCount,
-          historyPageCount: history.pageCount,
-          historyRecordCount: history.recordCount
-        }];
-      }))
-    };
+    operationalFields.payloadBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
 
     if (options.dryRun) {
+      operationalFields.pushResult = 'skipped-dry-run';
       return {
         status: 'dry-run',
         slot: options.slot.key,
@@ -211,9 +360,23 @@ export async function runFundingJob(
       currentStage = 'webhook';
       throw new Error('Google Chat client is required when sending');
     }
-    await measureAsync('webhook', 'webhookDurationMs', () => deps.chat!.send(message));
+    operationalFields.pushResult = 'attempted';
+    try {
+      await measureAsync('webhook', 'webhookDurationMs', () => deps.chat!.send(message));
+      operationalFields.pushResult = 'sent';
+    } catch (error) {
+      operationalFields.pushResult = 'failed';
+      throw error;
+    }
     currentStage = 'state-commit';
-    await deps.state.markSuccessful(options.slot, deps.now());
+    operationalFields.slotState = 'commit-pending';
+    try {
+      await deps.state.markSuccessful(options.slot, deps.now());
+      operationalFields.slotState = 'committed';
+    } catch (error) {
+      operationalFields.slotState = 'commit-failed';
+      throw error;
+    }
     return {
       status: 'sent',
       slot: options.slot.key,
@@ -237,13 +400,18 @@ export async function runFundingJob(
     });
     return result;
   } catch (error) {
+    if (error instanceof GoogleChatPayloadSizeError) {
+      operationalFields.payloadBytes = error.payloadBytes;
+    }
     deps.logger.error('funding_job.failed', {
       slot: options.slot.key,
       trigger: options.trigger,
       stage: currentStage,
       errorCategory: failureCategory(currentStage, error),
       asOf: asOf ?? null,
-      durationMs: Math.max(0, deps.now() - startedAtMs)
+      durationMs: Math.max(0, deps.now() - startedAtMs),
+      ...stageDurations,
+      ...operationalFields
     });
     throw error;
   }

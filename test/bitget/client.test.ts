@@ -171,6 +171,44 @@ test('omits unavailable blank contract launchTime instead of reporting epoch zer
   assert.equal(snapshot.markets[0]?.listedAt, undefined);
 });
 
+for (const launchTime of ['not-a-time', '9007199254740992', '0', '-1']) {
+  test(`rejects nonblank unsafe Bitget launchTime ${launchTime}`, async () => {
+    const client = new BitgetClient({
+      baseUrl,
+      fetch: queuedFetch([
+        jsonResponse(envelope([contract('BTCUSDT', { launchTime })])),
+        jsonResponse(envelope([current('BTCUSDT')]))
+      ], []),
+      now: () => AS_OF,
+      sleep: async () => {}
+    });
+
+    await assert.rejects(client.getCurrentSnapshot(), (error: unknown) => (
+      error instanceof VenueRequestError
+      && error.venue === 'bitget'
+      && /Invalid Bitget launchTime for BTCUSDT/.test(error.message)
+    ));
+  });
+}
+
+test('rejects a Bitget launchTime after the snapshot observation time', async () => {
+  const client = new BitgetClient({
+    baseUrl,
+    fetch: queuedFetch([
+      jsonResponse(envelope([contract('BTCUSDT', { launchTime: String(AS_OF + 1) })])),
+      jsonResponse(envelope([current('BTCUSDT')]))
+    ], []),
+    now: () => AS_OF,
+    sleep: async () => {}
+  });
+
+  await assert.rejects(client.getCurrentSnapshot(), (error: unknown) => (
+    error instanceof VenueRequestError
+    && error.venue === 'bitget'
+    && /Invalid Bitget launchTime for BTCUSDT/.test(error.message)
+  ));
+});
+
 test('stops after a full descending page covers the seven-day window for an established eight-hour market', async () => {
   const seen: SeenRequest[] = [];
   const establishedPage = Array.from(

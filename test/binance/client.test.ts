@@ -6,6 +6,7 @@ import {
   BinanceRequestError,
   BinanceTimeoutError
 } from '../../src/binance/client.js';
+import type { VenueRequestTelemetry } from '../../src/domain.js';
 import { jsonResponse, queuedFetch, type SeenRequest } from '../helpers/fetch.js';
 
 const baseUrl = new URL('https://fapi.binance.com');
@@ -140,6 +141,7 @@ test('honors a numeric Retry-After value for a 429 response', async () => {
 
 test('retries a 500 response with exponential backoff and succeeds', async () => {
   const sleeps: number[] = [];
+  const telemetry: VenueRequestTelemetry[] = [];
   const client = new BinanceClient({
     baseUrl,
     fetch: queuedFetch([
@@ -150,8 +152,19 @@ test('retries a 500 response with exponential backoff and succeeds', async () =>
     random: () => 0.5
   });
 
-  assert.equal(await client.getServerTime(), 2);
+  assert.equal(await client.getServerTime((event) => { telemetry.push(event); }), 2);
   assert.deepEqual(sleeps, [625]);
+  assert.deepEqual(telemetry.map(({ venue, operation, attempts, retries, outcome }) => ({
+    venue, operation, attempts, retries, outcome
+  })), [{
+    venue: 'binance',
+    operation: 'current',
+    attempts: 2,
+    retries: 1,
+    outcome: 'success'
+  }]);
+  assert.equal(telemetry[0]!.durationMs >= 0, true);
+  assert.equal('path' in telemetry[0]!, false);
 });
 
 test('fails immediately for a 400 response', async () => {

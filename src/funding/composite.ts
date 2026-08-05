@@ -9,13 +9,36 @@ import {
   type VenueId,
   type VenueSnapshot
 } from '../domain.js';
-import { normalizeAsset } from '../exchanges/normalize.js';
+import { normalizeAssetWithDiagnostics } from '../exchanges/normalize.js';
 
 const DAYS_PER_YEAR = new Decimal(365);
+const MINUTE_MS = 60 * 1_000;
+const MAX_SNAPSHOT_FUTURE_SKEW_MS = 5 * MINUTE_MS;
+const MAX_SNAPSHOT_AGE_MS = 30 * MINUTE_MS;
 
 export interface BuildCompositeFundingLeaderboardInput {
   asOf: number;
   snapshots: VenueSnapshot[];
+  onTelemetry?: (telemetry: CompositeBuildTelemetry) => void;
+}
+
+export interface CoverageCountsTelemetry {
+  two: number;
+  three: number;
+  four: number;
+  five: number;
+}
+
+export interface NormalizationTelemetry {
+  beforeAssetCount: number;
+  afterAssetCount: number;
+  explicitAliasCount: number;
+  conflictCount: number;
+}
+
+export interface CompositeBuildTelemetry {
+  normalization: NormalizationTelemetry;
+  candidateCoverageCounts: CoverageCountsTelemetry;
 }
 
 function nextApr(rate: Decimal, intervalHours: number): Decimal {
@@ -25,12 +48,44 @@ function nextApr(rate: Decimal, intervalHours: number): Decimal {
   return rate.times(24).div(intervalHours).times(DAYS_PER_YEAR);
 }
 
-function requireCompleteSnapshots(snapshots: VenueSnapshot[]): Record<VenueId, VenueSnapshot> {
+export function assertCompleteVenueSnapshots(
+  snapshots: VenueSnapshot[],
+  asOf: number
+): Record<VenueId, VenueSnapshot> {
+  if (!Number.isSafeInteger(asOf) || asOf <= 0) {
+    throw new Error('Invalid final aggregation time');
+  }
   const byVenue = new Map(snapshots.map((snapshot) => [snapshot.venue, snapshot]));
   if (snapshots.length !== VENUE_IDS.length
     || byVenue.size !== VENUE_IDS.length
     || VENUE_IDS.some((venue) => !byVenue.has(venue))) {
     throw new Error('Funding leaderboard requires one snapshot from every venue');
+  }
+  for (const venue of VENUE_IDS) {
+    const snapshot = byVenue.get(venue)!;
+    if (
+      !Number.isSafeInteger(snapshot.observedAt)
+      || snapshot.observedAt <= 0
+      || snapshot.observedAt > asOf + MAX_SNAPSHOT_FUTURE_SKEW_MS
+    ) {
+      throw new Error(`Invalid ${venue} snapshot observation time`);
+    }
+    if (snapshot.observedAt < asOf - MAX_SNAPSHOT_AGE_MS) {
+      throw new Error(`Stale ${venue} snapshot observation time`);
+    }
+    if (snapshot.markets.length === 0) {
+      throw new Error(`${venue} snapshot has no markets`);
+    }
+    if (
+      snapshot.stats.marketCount !== snapshot.markets.length
+      || !Number.isSafeInteger(snapshot.stats.requestCount)
+      || snapshot.stats.requestCount < 1
+      || !Number.isSafeInteger(snapshot.stats.pageCount)
+      || snapshot.stats.pageCount < 0
+      || snapshot.stats.pageCount > snapshot.stats.requestCount
+    ) {
+      throw new Error(`${venue} snapshot stats do not match markets`);
+    }
   }
   return Object.fromEntries(
     VENUE_IDS.map((venue) => [venue, byVenue.get(venue)!])
@@ -49,20 +104,48 @@ function parseRate(market: VenueFundingSnapshot, venue: VenueId): Decimal {
   }
 }
 
-function normalizedAsset(market: VenueFundingSnapshot, venue: VenueId): string {
+function normalizedAsset(
+  market: VenueFundingSnapshot,
+  venue: VenueId
+): { asset: string; explicitAlias: boolean } {
   try {
-    return normalizeAsset(venue, market.rawBaseAsset);
+    return normalizeAssetWithDiagnostics(venue, market.rawBaseAsset);
   } catch {
     throw new Error(`Invalid base asset for ${venue} market ${market.marketId}`);
   }
 }
 
-function metricForMarket(market: VenueFundingSnapshot, snapshot: VenueSnapshot): CompositeVenueFundingMetric {
+function emptyCoverageCounts(): CoverageCountsTelemetry {
+  return { two: 0, three: 0, four: 0, five: 0 };
+}
+
+function notifyTelemetry(
+  input: BuildCompositeFundingLeaderboardInput,
+  telemetry: CompositeBuildTelemetry
+): void {
+  try {
+    input.onTelemetry?.({
+      normalization: { ...telemetry.normalization },
+      candidateCoverageCounts: { ...telemetry.candidateCoverageCounts }
+    });
+  } catch {
+    // Observability must not alter ranking behavior.
+  }
+}
+
+function metricForMarket(
+  market: VenueFundingSnapshot,
+  snapshot: VenueSnapshot,
+  asOf: number
+): CompositeVenueFundingMetric {
   const venue = snapshot.venue;
   if (market.venue !== venue) {
     throw new Error(`Market venue ${market.venue} does not match snapshot venue ${venue}`);
   }
-  if (!Number.isFinite(market.nextFundingTime) || market.nextFundingTime <= snapshot.observedAt) {
+  if (
+    !Number.isSafeInteger(market.nextFundingTime)
+    || market.nextFundingTime <= Math.max(asOf, snapshot.observedAt)
+  ) {
     throw new Error(`Invalid next funding time for ${venue} market ${market.marketId}`);
   }
 
@@ -125,8 +208,20 @@ function assertRankedRows(rows: CompositeFundingRow[]): void {
 export function buildCompositeFundingLeaderboard(
   input: BuildCompositeFundingLeaderboardInput
 ): CompositeFundingLeaderboard {
-  const snapshotsByVenue = requireCompleteSnapshots(input.snapshots);
+  const snapshotsByVenue = assertCompleteVenueSnapshots(input.snapshots, input.asOf);
   const rowsByAsset = new Map<string, CompositeFundingRow>();
+  const telemetry: CompositeBuildTelemetry = {
+    normalization: {
+      beforeAssetCount: new Set(input.snapshots.flatMap((snapshot) =>
+        snapshot.markets.map((market) => market.rawBaseAsset.trim().toUpperCase())
+      )).size,
+      afterAssetCount: 0,
+      explicitAliasCount: 0,
+      conflictCount: 0
+    },
+    candidateCoverageCounts: emptyCoverageCounts()
+  };
+  notifyTelemetry(input, telemetry);
 
   for (const venue of VENUE_IDS) {
     const snapshot = snapshotsByVenue[venue];
@@ -135,13 +230,18 @@ export function buildCompositeFundingLeaderboard(
       if (market.venue !== venue) {
         throw new Error(`Market venue ${market.venue} does not match snapshot venue ${venue}`);
       }
-      const asset = normalizedAsset(market, venue);
+      const normalized = normalizedAsset(market, venue);
+      const asset = normalized.asset;
+      if (normalized.explicitAlias) telemetry.normalization.explicitAliasCount += 1;
       if (assetsInVenue.has(asset)) {
+        telemetry.normalization.conflictCount += 1;
+        telemetry.normalization.afterAssetCount = rowsByAsset.size;
+        notifyTelemetry(input, telemetry);
         throw new Error(`Duplicate normalized asset ${asset} for ${venue}`);
       }
       assetsInVenue.add(asset);
 
-      const metric = metricForMarket(market, snapshot);
+      const metric = metricForMarket(market, snapshot, input.asOf);
       const row = rowsByAsset.get(asset) ?? {
         rank: 0,
         asset,
@@ -151,8 +251,10 @@ export function buildCompositeFundingLeaderboard(
       };
       row.venues[venue] = metric;
       rowsByAsset.set(asset, row);
+      telemetry.normalization.afterAssetCount = rowsByAsset.size;
     }
   }
+  notifyTelemetry(input, telemetry);
 
   const candidates = [...rowsByAsset.values()].flatMap((row) => {
     const metrics = Object.values(row.venues);
@@ -164,8 +266,13 @@ export function buildCompositeFundingLeaderboard(
     row.compositeNextApr = metrics
       .reduce((sum, metric) => sum.plus(metric!.nextApr), new Decimal(0))
       .div(coverageCount);
+    if (coverageCount === 2) telemetry.candidateCoverageCounts.two += 1;
+    if (coverageCount === 3) telemetry.candidateCoverageCounts.three += 1;
+    if (coverageCount === 4) telemetry.candidateCoverageCounts.four += 1;
+    if (coverageCount === 5) telemetry.candidateCoverageCounts.five += 1;
     return [row];
   });
+  notifyTelemetry(input, telemetry);
 
   if (candidates.length < 20) {
     throw new Error('Funding leaderboard has fewer than 20 valid assets');

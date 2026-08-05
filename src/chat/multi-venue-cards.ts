@@ -12,6 +12,13 @@ const POSITIVE_FUNDING_COLOR = '#D93025';
 const NEGATIVE_FUNDING_COLOR = '#188038';
 const VENUES: VenueId[] = ['binance', 'okx', 'hyperliquid', 'bybit', 'bitget'];
 
+export class GoogleChatPayloadSizeError extends Error {
+  constructor(readonly payloadBytes: number) {
+    super('Google Chat message exceeds 32000 bytes');
+    this.name = 'GoogleChatPayloadSizeError';
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
@@ -89,8 +96,9 @@ export function buildFundingChatMessage(leaderboard: CompositeFundingLeaderboard
     ]
   };
 
-  if (Buffer.byteLength(JSON.stringify(message), 'utf8') >= MAX_MESSAGE_BYTES) {
-    throw new Error('Google Chat message exceeds 32000 bytes');
+  const payloadBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+  if (payloadBytes >= MAX_MESSAGE_BYTES) {
+    throw new GoogleChatPayloadSizeError(payloadBytes);
   }
   return message;
 }

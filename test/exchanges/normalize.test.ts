@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { VENUE_IDS } from '../../src/domain.js';
-import { normalizeAsset } from '../../src/exchanges/normalize.js';
+import { normalizeAsset, normalizeAssetWithDiagnostics } from '../../src/exchanges/normalize.js';
 
 test('uses the five approved venues in stable card order', () => {
   assert.deepEqual(VENUE_IDS, ['binance', 'okx', 'hyperliquid', 'bybit', 'bitget']);
@@ -23,4 +23,15 @@ test('rejects blank or unsafe asset identifiers', () => {
   assert.throws(() => normalizeAsset('binance', '币 安'), /Invalid binance base asset/);
   assert.throws(() => normalizeAsset('binance', '币-安'), /Invalid binance base asset/);
   assert.throws(() => normalizeAsset('binance', '币\u0000安'), /Invalid binance base asset/);
+});
+
+test('reports explicit alias hits without treating ordinary case normalization as an alias', () => {
+  assert.deepEqual(
+    normalizeAssetWithDiagnostics('binance', '1000PEPE'),
+    { asset: 'PEPE', explicitAlias: true }
+  );
+  assert.deepEqual(
+    normalizeAssetWithDiagnostics('binance', 'btc'),
+    { asset: 'BTC', explicitAlias: false }
+  );
 });

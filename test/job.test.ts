@@ -35,6 +35,7 @@ const slot: ScheduledSlot = { key: '2026-08-03T16', scheduledAtMs: AS_OF };
 interface FakeOptions {
   candidateCount?: number;
   assetLength?: number;
+  emptyVenue?: VenueId;
 }
 
 function assetName(index: number, length?: number): string {
@@ -52,16 +53,19 @@ function market(venue: VenueId, index: number, options: FakeOptions): VenueFundi
     settleAsset: venue === 'hyperliquid' ? 'USDC' : 'USDT',
     nextFundingRate: String(0.001 - index * 0.00001),
     intervalHours: 8,
-    nextFundingTime: AS_OF + HOUR
+    nextFundingTime: AS_OF + HOUR,
+    listedAt: AS_OF - 30 * DAY
   };
 }
 
 function snapshot(venue: VenueId, options: FakeOptions): VenueSnapshot {
   const venueIndex = VENUE_IDS.indexOf(venue);
-  const markets = Array.from(
-    { length: options.candidateCount ?? 25 },
-    (_, index) => market(venue, index, options)
-  );
+  const markets = options.emptyVenue === venue
+    ? []
+    : Array.from(
+      { length: options.candidateCount ?? 25 },
+      (_, index) => market(venue, index, options)
+    );
   return {
     venue,
     observedAt: AS_OF,
@@ -156,6 +160,58 @@ test('starts all five current snapshot requests before waiting for any one to re
   await run;
 });
 
+test('waits for every started current snapshot before rejecting and releasing the run lock', async () => {
+  const { deps } = dependencies();
+  let releaseBinance: (() => void) | undefined;
+  const binanceGate = new Promise<void>((resolve) => { releaseBinance = resolve; });
+  let lockReleased = false;
+  let jobSettled = false;
+  const originalBinance = deps.venues.binance.getCurrentSnapshot.bind(deps.venues.binance);
+  deps.venues.binance.getCurrentSnapshot = async () => {
+    await binanceGate;
+    return originalBinance();
+  };
+  deps.venues.okx.getCurrentSnapshot = async () => {
+    throw new VenueRequestError('okx', 'OKX current failed');
+  };
+  deps.state.withRunLock = async <T>(work: () => Promise<T>) => {
+    try {
+      return await work();
+    } finally {
+      lockReleased = true;
+    }
+  };
+
+  const outcome = runFundingJob(deps, jobOptions({ force: true }))
+    .then(() => new Error('unexpected success'), (error: unknown) => error)
+    .finally(() => { jobSettled = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(jobSettled, false);
+  assert.equal(lockReleased, false);
+  releaseBinance?.();
+  const error = await outcome;
+  assert.ok(error instanceof VenueRequestError);
+  assert.equal(error.venue, 'okx');
+  assert.equal(lockReleased, true);
+});
+
+test('selects current snapshot failures deterministically by venue order', async () => {
+  const { deps } = dependencies();
+  deps.venues.binance.getCurrentSnapshot = async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    throw new VenueRequestError('binance', 'Binance current failed');
+  };
+  deps.venues.okx.getCurrentSnapshot = async () => {
+    throw new VenueRequestError('okx', 'OKX current failed first');
+  };
+
+  await assert.rejects(
+    runFundingJob(deps, jobOptions({ dryRun: true })),
+    (error: unknown) => error instanceof VenueRequestError && error.venue === 'binance'
+  );
+});
+
 test('dry-run fetches all current snapshots and only selected Top20 history without state or Chat', async () => {
   const { deps, calls, logs } = dependencies();
 
@@ -176,6 +232,19 @@ test('dry-run fetches all current snapshots and only selected Top20 history with
   const completed = logs.find((entry) => entry.event === 'funding_job.completed');
   assert.equal(completed?.fields?.status, 'dry-run');
   assert.equal(completed?.fields?.rowCount, 20);
+});
+
+test('a zero-market core venue fails before selected history or Chat', async () => {
+  const { deps, calls } = dependencies(null, { emptyVenue: 'binance' });
+
+  await assert.rejects(
+    runFundingJob(deps, jobOptions({ force: true })),
+    /binance snapshot has no markets/
+  );
+
+  assert.equal(calls.some((call) => call.includes('.history:')), false);
+  assert.equal(calls.includes('chat.send'), false);
+  assert.equal(calls.includes('state.write'), false);
 });
 
 test('sends after current-rank-history-card and commits state only after Chat succeeds', async () => {
@@ -199,7 +268,7 @@ test('sends after current-rank-history-card and commits state only after Chat su
   assert.equal(completed?.fields?.asOf, JOB_AS_OF);
   assert.equal(completed?.fields?.candidateCount, 25);
   assert.equal(completed?.fields?.rowCount, 20);
-  assert.deepEqual(completed?.fields?.coverageCounts, { two: 0, three: 0, four: 0, five: 20 });
+  assert.deepEqual(completed?.fields?.top20CoverageCounts, { two: 0, three: 0, four: 0, five: 20 });
   for (const field of [
     'durationMs',
     'currentFetchDurationMs',
@@ -211,13 +280,164 @@ test('sends after current-rank-history-card and commits state only after Chat su
   ]) {
     assert.equal(typeof completed?.fields?.[field], 'number', field);
   }
-  assert.deepEqual(completed?.fields?.venues, {
-    binance: { marketCount: 25, currentRequestCount: 1, currentPageCount: 0, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 },
-    okx: { marketCount: 25, currentRequestCount: 2, currentPageCount: 1, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 },
-    hyperliquid: { marketCount: 25, currentRequestCount: 3, currentPageCount: 2, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 },
-    bybit: { marketCount: 25, currentRequestCount: 4, currentPageCount: 3, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 },
-    bitget: { marketCount: 25, currentRequestCount: 5, currentPageCount: 4, historyRequestCount: 20, historyPageCount: 20, historyRecordCount: 20 }
+  const venues = completed?.fields?.venues as Record<VenueId, Record<string, unknown>>;
+  for (const [venue, requestCount, pageCount] of [
+    ['binance', 1, 0],
+    ['okx', 2, 1],
+    ['hyperliquid', 3, 2],
+    ['bybit', 4, 3],
+    ['bitget', 5, 4]
+  ] as const) {
+    assert.equal(venues[venue].marketCount, 25);
+    assert.equal(venues[venue].currentRequestCount, requestCount);
+    assert.equal(venues[venue].currentPageCount, pageCount);
+    assert.equal(venues[venue].historyRequestCount, 20);
+    assert.equal(venues[venue].historyPageCount, 20);
+    assert.equal(venues[venue].historyRecordCount, 20);
+  }
+});
+
+test('logs the complete sanitized design observability contract', async () => {
+  const { deps, logs } = dependencies();
+  for (const venue of VENUE_IDS) {
+    const original = deps.venues[venue].getCurrentSnapshot.bind(deps.venues[venue]);
+    deps.venues[venue].getCurrentSnapshot = async (onTelemetry) => {
+      const result = await original(onTelemetry);
+      result.markets[0]!.rawBaseAsset = venue === 'binance' ? '1000PEPE' : 'PEPE';
+      if (venue === 'bitget') {
+        result.markets.shift();
+        result.stats.marketCount = result.markets.length;
+      }
+      return result;
+    };
+  }
+
+  await runFundingJob(deps, jobOptions());
+
+  const fields = logs.find(({ event }) => event === 'funding_job.completed')?.fields;
+  assert.deepEqual(fields?.normalization, {
+    beforeAssetCount: 26,
+    afterAssetCount: 25,
+    explicitAliasCount: 1,
+    conflictCount: 0
   });
+  assert.deepEqual(fields?.candidateCoverageCounts, { two: 0, three: 0, four: 1, five: 24 });
+  assert.deepEqual(fields?.top20CoverageCounts, { two: 0, three: 0, four: 1, five: 19 });
+  const top20 = fields?.top20 as Array<Record<string, unknown>>;
+  assert.deepEqual(top20[0], {
+    rank: 1,
+    asset: 'PEPE',
+    compositeNextApr: '1.095',
+    coverageCount: 4,
+    venues: {
+      binance: { status: 'present' },
+      okx: { status: 'present' },
+      hyperliquid: { status: 'present' },
+      bybit: { status: 'present' },
+      bitget: { status: 'missing', reason: 'not-listed' }
+    }
+  });
+  const venues = fields?.venues as Record<VenueId, Record<string, unknown>>;
+  assert.deepEqual(venues.binance.historyCoverageDays, { minimum: '7', maximum: '7', average: '7' });
+  assert.equal(venues.binance.marketCount, 25);
+  assert.equal(venues.binance.currentFundingCount, 25);
+  assert.equal(venues.binance.currentRequestCount, 1);
+  assert.equal(venues.binance.currentPageCount, 0);
+  assert.equal(venues.binance.currentRetryCount, 0);
+  assert.equal(venues.binance.historySelectedMarketCount, 20);
+  assert.equal(venues.binance.historyRequestCount, 20);
+  assert.equal(venues.binance.historyPageCount, 20);
+  assert.equal(venues.binance.historyRetryCount, 0);
+  assert.equal(venues.binance.historyRecordCount, 20);
+  assert.equal(typeof venues.binance.currentDurationMs, 'number');
+  assert.equal(typeof venues.binance.historyStageDurationMs, 'number');
+  assert.equal(venues.bitget.historySelectedMarketCount, 19);
+  assert.equal(fields?.pushResult, 'sent');
+  assert.equal(fields?.slotState, 'committed');
+  assert.equal(typeof fields?.payloadBytes, 'number');
+  assert.doesNotMatch(JSON.stringify(fields), /response body|secret|token=/i);
+});
+
+test('preserves sanitized partial request progress when current collection fails', async () => {
+  const { deps, logs } = dependencies();
+  deps.venues.okx.getCurrentSnapshot = async (onTelemetry) => {
+    onTelemetry?.({
+      venue: 'okx',
+      operation: 'current',
+      attempts: 3,
+      retries: 2,
+      durationMs: 9,
+      outcome: 'failure'
+    });
+    throw new VenueRequestError('okx', 'sanitized failure');
+  };
+
+  await assert.rejects(runFundingJob(deps, jobOptions({ force: true })), VenueRequestError);
+
+  const fields = logs.find(({ event }) => event === 'funding_job.failed')?.fields;
+  const venues = fields?.venues as Record<VenueId, Record<string, unknown>>;
+  assert.equal(venues.okx.currentRequestCount, 1);
+  assert.equal(venues.okx.currentRetryCount, 2);
+  assert.equal(venues.binance.marketCount, 25);
+  assert.equal(fields?.pushResult, 'not-attempted');
+  assert.equal(fields?.slotState, 'eligible');
+  assert.equal(typeof fields?.currentFetchDurationMs, 'number');
+});
+
+test('preserves normalization conflict progress on a rank failure', async () => {
+  const { deps, logs } = dependencies();
+  const original = deps.venues.binance.getCurrentSnapshot.bind(deps.venues.binance);
+  deps.venues.binance.getCurrentSnapshot = async (onTelemetry) => {
+    const result = await original(onTelemetry);
+    result.markets.push({ ...result.markets[0]!, marketId: 'duplicate-binance-market' });
+    result.stats.marketCount = result.markets.length;
+    return result;
+  };
+
+  await assert.rejects(runFundingJob(deps, jobOptions({ force: true })), /Duplicate normalized asset/);
+
+  const fields = logs.find(({ event }) => event === 'funding_job.failed')?.fields;
+  assert.equal((fields?.normalization as Record<string, unknown>).conflictCount, 1);
+  assert.equal((fields?.normalization as Record<string, unknown>).afterAssetCount, 25);
+});
+
+test('preserves completed history and retry progress when selected history fails', async () => {
+  const { deps, logs } = dependencies();
+  deps.venues.binance.getFundingHistory = async (request, onTelemetry) => {
+    onTelemetry?.({
+      venue: 'binance',
+      operation: 'history',
+      attempts: 2,
+      retries: 1,
+      durationMs: 7,
+      outcome: 'failure'
+    });
+    if (request.market.marketId.includes('ASSET01')) {
+      throw new VenueRequestError('binance', 'selected history failed');
+    }
+    throw new Error('already-started Binance request also failed');
+  };
+
+  await assert.rejects(runFundingJob(deps, jobOptions({ force: true })), VenueRequestError);
+
+  const fields = logs.find(({ event }) => event === 'funding_job.failed')?.fields;
+  const venues = fields?.venues as Record<VenueId, Record<string, unknown>>;
+  assert.equal(venues.binance.historyRetryCount, 2);
+  assert.equal(venues.binance.historyRequestCount, 2);
+  assert.equal(venues.okx.historyRecordCount, 2);
+  assert.equal(venues.okx.historyCoverageDays !== undefined, true);
+  assert.equal(typeof venues.okx.historyStageDurationMs, 'number');
+});
+
+test('logs the attempted byte count when an oversized Chat payload fails to build', async () => {
+  const { deps, logs } = dependencies(null, { assetLength: 1_600 });
+
+  await assert.rejects(runFundingJob(deps, jobOptions({ force: true })), /exceeds 32000 bytes/);
+
+  const fields = logs.find(({ event }) => event === 'funding_job.failed')?.fields;
+  assert.equal(typeof fields?.payloadBytes, 'number');
+  assert.ok((fields?.payloadBytes as number) >= 32_000);
+  assert.equal(fields?.pushResult, 'not-attempted');
 });
 
 test('serializes two jobs across the complete duplicate-check-through-send transaction', async (t) => {
@@ -262,6 +482,48 @@ test('serializes two jobs across the complete duplicate-check-through-send trans
   assert.deepEqual(secondResult, { status: 'skipped', slot: slot.key, reason: 'already-sent' });
   assert.equal(webhookPosts, 1);
   assert.equal(JSON.parse(await readFile(statePath, 'utf8')).lastSuccessfulSlot, slot.key);
+});
+
+test('keeps the run lock until started selected-history work becomes quiescent', async () => {
+  const { deps, calls } = dependencies();
+  let releaseOkxHistory: (() => void) | undefined;
+  const okxHistoryGate = new Promise<void>((resolve) => { releaseOkxHistory = resolve; });
+  let lockReleased = false;
+  let jobSettled = false;
+  const originalOkxHistory = deps.venues.okx.getFundingHistory.bind(deps.venues.okx);
+  deps.venues.binance.getFundingHistory = async (request) => {
+    calls.push(`binance.history:${request.market.marketId}`);
+    if (request.market.marketId.includes('ASSET01')) {
+      throw new VenueRequestError('binance', 'Binance selected history failed');
+    }
+    throw new Error('new Binance history work started after failure');
+  };
+  deps.venues.okx.getFundingHistory = async (request) => {
+    if (request.market.marketId.includes('ASSET01')) await okxHistoryGate;
+    return originalOkxHistory(request);
+  };
+  deps.state.withRunLock = async <T>(work: () => Promise<T>) => {
+    try {
+      return await work();
+    } finally {
+      lockReleased = true;
+    }
+  };
+
+  const outcome = runFundingJob(deps, jobOptions({ force: true }))
+    .then(() => new Error('unexpected success'), (error: unknown) => error)
+    .finally(() => { jobSettled = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(jobSettled, false);
+  assert.equal(lockReleased, false);
+  releaseOkxHistory?.();
+  const error = await outcome;
+  assert.ok(error instanceof VenueRequestError);
+  assert.equal(error.venue, 'binance');
+  assert.equal(lockReleased, true);
+  assert.equal(calls.filter((call) => call.startsWith('binance.history:')).length, 2);
+  assert.equal(calls.includes('chat.send'), false);
 });
 
 test('force bypasses only the duplicate check and still runs all venue phases', async () => {
@@ -363,15 +625,19 @@ for (const [name, expectedStage, expectedCategory, expectedAsOf, options, change
     assert.equal(calls.includes('state.write'), false);
     const failures = logs.filter((entry) => entry.event === 'funding_job.failed');
     assert.equal(failures.length, 1);
-    assert.deepEqual(failures[0]!.fields, {
-      slot: slot.key,
-      trigger: 'manual',
-      stage: expectedStage,
-      errorCategory: expectedCategory,
-      asOf: expectedAsOf,
-      durationMs: failures[0]!.fields?.durationMs
-    });
-    assert.equal(typeof failures[0]!.fields?.durationMs, 'number');
+    const fields = failures[0]!.fields!;
+    assert.equal(fields.slot, slot.key);
+    assert.equal(fields.trigger, 'manual');
+    assert.equal(fields.stage, expectedStage);
+    assert.equal(fields.errorCategory, expectedCategory);
+    assert.equal(fields.asOf, expectedAsOf);
+    assert.equal(typeof fields.durationMs, 'number');
+    assert.equal(typeof fields.currentFetchDurationMs, 'number');
+    assert.equal(typeof fields.rankDurationMs, 'number');
+    assert.equal(typeof fields.historyFetchDurationMs, 'number');
+    assert.equal(typeof fields.cardBuildDurationMs, 'number');
+    assert.equal(typeof fields.webhookDurationMs, 'number');
+    assert.ok(fields.venues !== undefined);
   });
 }
 

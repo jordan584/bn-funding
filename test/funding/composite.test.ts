@@ -6,6 +6,7 @@ import { buildCompositeFundingLeaderboard } from '../../src/funding/composite.js
 
 const AS_OF = 1_700_000_000_000;
 const HOUR = 60 * 60 * 1_000;
+const MINUTE = 60 * 1_000;
 const VENUES: VenueId[] = ['binance', 'okx', 'hyperliquid', 'bybit', 'bitget'];
 
 function venueMarket(
@@ -38,7 +39,10 @@ function venueSnapshot(venue: VenueId, markets: VenueFundingSnapshot[]): VenueSn
 }
 
 function completeSnapshots(marketsByVenue: Partial<Record<VenueId, VenueFundingSnapshot[]>> = {}): VenueSnapshot[] {
-  return VENUES.map((venue) => venueSnapshot(venue, marketsByVenue[venue] ?? []));
+  return VENUES.map((venue) => venueSnapshot(
+    venue,
+    marketsByVenue[venue] ?? [venueMarket(venue, `ONLY${venue}`)]
+  ));
 }
 
 function addTwoVenueCandidates(snapshots: VenueSnapshot[], count: number, prefix = 'ASSET'): void {
@@ -47,6 +51,8 @@ function addTwoVenueCandidates(snapshots: VenueSnapshot[], count: number, prefix
     snapshots[0]!.markets.push(venueMarket('binance', asset));
     snapshots[1]!.markets.push(venueMarket('okx', asset));
   }
+  snapshots[0]!.stats.marketCount = snapshots[0]!.markets.length;
+  snapshots[1]!.stats.marketCount = snapshots[1]!.markets.length;
 }
 
 test('normalizes interval APR before equal-weighting two to five valid venues', () => {
@@ -54,8 +60,8 @@ test('normalizes interval APR before equal-weighting two to five valid venues', 
     venueSnapshot('binance', [venueMarket('binance', 'BTC', '0.0008', 8)]),
     venueSnapshot('okx', [venueMarket('okx', 'BTC', '0.0001', 1)]),
     venueSnapshot('hyperliquid', [venueMarket('hyperliquid', 'BTC', '0.0001', 1)]),
-    venueSnapshot('bybit', []),
-    venueSnapshot('bitget', [])
+    venueSnapshot('bybit', [venueMarket('bybit', 'ONLYBYBIT')]),
+    venueSnapshot('bitget', [venueMarket('bitget', 'ONLYBITGET')])
   ];
   addTwoVenueCandidates(snapshots, 19);
 
@@ -135,6 +141,21 @@ test('requires one snapshot for each of the five venues and matching market venu
   );
 });
 
+test('rejects an empty core snapshot and snapshot stats inconsistent with its markets', () => {
+  const emptyVenue = completeSnapshots({ binance: [] });
+  assert.throws(
+    () => buildCompositeFundingLeaderboard({ asOf: AS_OF, snapshots: emptyVenue }),
+    /binance snapshot has no markets/
+  );
+
+  const inconsistentStats = completeSnapshots();
+  inconsistentStats[0]!.stats.marketCount = 2;
+  assert.throws(
+    () => buildCompositeFundingLeaderboard({ asOf: AS_OF, snapshots: inconsistentStats }),
+    /binance snapshot stats do not match markets/
+  );
+});
+
 test('rejects invalid rates, intervals, and stale next settlements', () => {
   for (const invalidMarket of [
     venueMarket('binance', 'BTC', 'not-a-decimal'),
@@ -149,6 +170,61 @@ test('rejects invalid rates, intervals, and stale next settlements', () => {
       /binance.*BTC/i
     );
   }
+});
+
+test('rejects a next settlement that was future at observation but stale at final aggregation', () => {
+  const snapshots = completeSnapshots({
+    binance: [venueMarket('binance', 'BTC', '0.0001', 8, {
+      nextFundingTime: AS_OF + 5 * MINUTE
+    })]
+  });
+
+  assert.throws(
+    () => buildCompositeFundingLeaderboard({ asOf: AS_OF + 10 * MINUTE, snapshots }),
+    /Invalid next funding time for binance market binance-BTC-PERP/
+  );
+});
+
+test('rejects a next settlement already stale at a slightly future-skewed observation time', () => {
+  const snapshots = completeSnapshots({
+    binance: [venueMarket('binance', 'BTC', '0.0001', 8, {
+      nextFundingTime: AS_OF + 30_000
+    })]
+  });
+  snapshots[0]!.observedAt = AS_OF + MINUTE;
+
+  assert.throws(
+    () => buildCompositeFundingLeaderboard({ asOf: AS_OF, snapshots }),
+    /Invalid next funding time for binance market binance-BTC-PERP/
+  );
+});
+
+test('validates final and snapshot times while allowing small exchange clock skew', () => {
+  const snapshots = completeSnapshots();
+  addTwoVenueCandidates(snapshots, 20);
+  snapshots[0]!.observedAt = AS_OF + MINUTE;
+
+  assert.equal(
+    buildCompositeFundingLeaderboard({ asOf: AS_OF, snapshots }).rows.length,
+    20
+  );
+
+  assert.throws(
+    () => buildCompositeFundingLeaderboard({ asOf: Number.NaN, snapshots }),
+    /Invalid final aggregation time/
+  );
+
+  snapshots[0]!.observedAt = AS_OF + 5 * MINUTE + 1;
+  assert.throws(
+    () => buildCompositeFundingLeaderboard({ asOf: AS_OF, snapshots }),
+    /Invalid binance snapshot observation time/
+  );
+
+  snapshots[0]!.observedAt = AS_OF - 30 * MINUTE - 1;
+  assert.throws(
+    () => buildCompositeFundingLeaderboard({ asOf: AS_OF, snapshots }),
+    /Stale binance snapshot observation time/
+  );
 });
 
 test('requires at least twenty assets covered by two venues', () => {

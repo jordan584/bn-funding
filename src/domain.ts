@@ -117,10 +117,26 @@ export interface VenueHistoryResult {
   completeFrom: number;
 }
 
+export type FundingDataOperation = 'current' | 'history';
+
+export interface VenueRequestTelemetry {
+  venue: VenueId;
+  operation: FundingDataOperation;
+  attempts: number;
+  retries: number;
+  durationMs: number;
+  outcome: 'success' | 'failure';
+}
+
+export type VenueRequestTelemetrySink = (telemetry: VenueRequestTelemetry) => void;
+
 export interface FundingVenueAdapter {
   readonly id: VenueId;
-  getCurrentSnapshot(): Promise<VenueSnapshot>;
-  getFundingHistory(request: VenueHistoryRequest): Promise<VenueHistoryResult>;
+  getCurrentSnapshot(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<VenueSnapshot>;
+  getFundingHistory(
+    request: VenueHistoryRequest,
+    onRequestTelemetry?: VenueRequestTelemetrySink
+  ): Promise<VenueHistoryResult>;
 }
 
 export interface CompositeVenueFundingMetric {

@@ -17,7 +17,15 @@ const ALIASES: Record<VenueId, Readonly<Record<string, string>>> = {
   bitget: { '1000BONK': 'BONK', '1000FLOKI': 'FLOKI', '1000PEPE': 'PEPE', '1000SHIB': 'SHIB' }
 };
 
-export function normalizeAsset(venue: VenueId, rawBaseAsset: string): string {
+export interface NormalizedAssetDiagnostics {
+  asset: string;
+  explicitAlias: boolean;
+}
+
+export function normalizeAssetWithDiagnostics(
+  venue: VenueId,
+  rawBaseAsset: string
+): NormalizedAssetDiagnostics {
   const normalized = rawBaseAsset.trim().toUpperCase();
   const venueAliases = Object.fromEntries(
     Object.entries(ALIASES[venue]).map(([key, value]) => [key.toUpperCase(), value])
@@ -26,5 +34,9 @@ export function normalizeAsset(venue: VenueId, rawBaseAsset: string): string {
   if (!/^[\p{L}\p{N}]+$/u.test(aliased)) {
     throw new Error(`Invalid ${venue} base asset`);
   }
-  return aliased;
+  return { asset: aliased, explicitAlias: aliased !== normalized };
+}
+
+export function normalizeAsset(venue: VenueId, rawBaseAsset: string): string {
+  return normalizeAssetWithDiagnostics(venue, rawBaseAsset).asset;
 }
