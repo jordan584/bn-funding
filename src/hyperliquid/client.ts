@@ -122,6 +122,9 @@ export class HyperliquidClient implements FundingVenueAdapter {
         'Hyperliquid funding history validation failed'
       );
       pageCount += 1;
+      if (page.length > HISTORY_PAGE_SIZE) {
+        throw new VenueRequestError(this.id, 'Hyperliquid funding history response exceeded 500 records');
+      }
       if (page.length === 0) break;
 
       let addedRecord = false;

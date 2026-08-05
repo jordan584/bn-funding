@@ -119,6 +119,46 @@ test('reads historical hourly settlements from fundingHistory', async () => {
   });
 });
 
+test('rejects malformed fundingHistory settlements without emitting partial history', async () => {
+  const invalidPages = [
+    { name: 'a different coin', page: [{ ...history(100), coin: 'ETH' }], error: /Unexpected Hyperliquid funding history asset ETH/ },
+    { name: 'a time outside the requested window', page: [history(201)], error: /outside requested window/ },
+    { name: 'an unsafe time', page: [history(Number.MAX_SAFE_INTEGER + 1)], error: /Invalid Hyperliquid funding history time/ },
+    { name: 'blank funding', page: [history(100, '')], error: /Invalid Hyperliquid funding for BTC/ },
+    { name: 'NaN funding', page: [history(100, 'NaN')], error: /Invalid Hyperliquid funding for BTC/ },
+    { name: 'infinite funding', page: [history(100, 'Infinity')], error: /Invalid Hyperliquid funding for BTC/ }
+  ];
+
+  for (const { name, page, error } of invalidPages) {
+    const client = new HyperliquidClient({
+      baseUrl,
+      fetch: queuedFetch([jsonResponse(page)], []),
+      sleep: async () => {}
+    });
+
+    await assert.rejects(client.getFundingHistory({
+      market: { ...venueMarket('hyperliquid', 'BTC'), marketId: 'BTC' },
+      startTime: 100,
+      endTime: 200
+    }), error, name);
+  }
+});
+
+test('rejects a fundingHistory response that exceeds Hyperliquid\'s 500-row page limit', async () => {
+  const oversizedPage = Array.from({ length: 501 }, (_, index) => history(index + 1));
+  const client = new HyperliquidClient({
+    baseUrl,
+    fetch: queuedFetch([jsonResponse(oversizedPage)], []),
+    sleep: async () => {}
+  });
+
+  await assert.rejects(client.getFundingHistory({
+    market: { ...venueMarket('hyperliquid', 'BTC'), marketId: 'BTC' },
+    startTime: 0,
+    endTime: 1_000
+  }), /Hyperliquid funding history response exceeded 500 records/);
+});
+
 test('paginates 500-row fundingHistory pages without losing the inclusive boundary', async () => {
   const seen: SeenRequest[] = [];
   const firstPage = Array.from({ length: 500 }, (_, index) => history(index + 1));
