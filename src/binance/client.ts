@@ -82,17 +82,37 @@ export class BinanceClient {
     startTime: number,
     endTime: number
   ): Promise<{ records: FundingHistoryRecord[]; pageCount: number }> {
+    return this.getFundingHistoryPages(startTime, endTime);
+  }
+
+  async getFundingHistoryForMarket(
+    symbol: string,
+    startTime: number,
+    endTime: number
+  ): Promise<{ records: FundingHistoryRecord[]; pageCount: number }> {
+    return this.getFundingHistoryPages(startTime, endTime, symbol);
+  }
+
+  private async getFundingHistoryPages(
+    startTime: number,
+    endTime: number,
+    symbol?: string
+  ): Promise<{ records: FundingHistoryRecord[]; pageCount: number }> {
     const records: FundingHistoryRecord[] = [];
     const seen = new Set<string>();
     let cursor = startTime;
     let pageCount = 0;
 
     while (true) {
-      const payload = await this.getJson('/fapi/v1/fundingRate', {
+      const query: Record<string, string> = {
         startTime: String(cursor),
         endTime: String(endTime),
         limit: String(this.historyPageLimit)
-      });
+      };
+      if (symbol !== undefined) {
+        query.symbol = symbol;
+      }
+      const payload = await this.getJson('/fapi/v1/fundingRate', query);
       const page = this.parse(fundingHistoryResponseSchema, payload);
       pageCount += 1;
 

@@ -354,3 +354,30 @@ test('rejects a full funding-history page that cannot add a key or advance the c
 
   await assert.rejects(client.getFundingHistory(101, 400), /Funding history pagination stalled/);
 });
+
+test('keeps legacy history unscoped and scopes every per-market history page', async () => {
+  const legacyRequests: SeenRequest[] = [];
+  const legacyClient = new BinanceClient({
+    baseUrl,
+    fetch: queuedFetch([jsonResponse([fundingRecord('BTCUSDT', 101)])], legacyRequests)
+  });
+  await legacyClient.getFundingHistory(101, 200);
+
+  const marketRequests: SeenRequest[] = [];
+  const marketClient = new BinanceClient({
+    baseUrl,
+    historyPageLimit: 2,
+    fetch: queuedFetch([
+      jsonResponse([fundingRecord('BTCUSDT', 101), fundingRecord('BTCUSDT', 200)]),
+      jsonResponse([fundingRecord('BTCUSDT', 200)])
+    ], marketRequests)
+  });
+  const result = await marketClient.getFundingHistoryForMarket('BTCUSDT', 101, 300);
+
+  assert.deepEqual(result.records.map(({ fundingTime }) => fundingTime), [101, 200]);
+  assert.equal(legacyRequests[0]?.url.searchParams.has('symbol'), false);
+  assert.deepEqual(
+    marketRequests.map(({ url }) => url.searchParams.get('symbol')),
+    ['BTCUSDT', 'BTCUSDT']
+  );
+});
