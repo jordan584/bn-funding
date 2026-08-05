@@ -12,6 +12,7 @@ export const bitgetContractSchema = z.object({
   baseCoin: z.string(),
   quoteCoin: z.string(),
   symbolStatus: z.string(),
+  symbolType: z.string(),
   launchTime: z.string()
 });
 

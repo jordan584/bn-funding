@@ -64,7 +64,9 @@ export class BitgetClient implements FundingVenueAdapter {
       await this.http.getJson('/api/v2/mix/market/contracts', { productType: 'usdt-futures' })
     );
     const eligibleContracts = contracts.filter((contract) => (
-      contract.symbolStatus === 'normal' && contract.quoteCoin === 'USDT'
+      contract.symbolStatus === 'normal'
+      && contract.quoteCoin === 'USDT'
+      && contract.symbolType === 'perpetual'
     ));
     if (eligibleContracts.length === 0) {
       throw new VenueRequestError(this.id, 'No eligible Bitget USDT futures contracts');
@@ -105,6 +107,7 @@ export class BitgetClient implements FundingVenueAdapter {
       if (nextFundingTime <= observedAt) {
         throw new VenueRequestError(this.id, `Invalid Bitget nextUpdate for ${contract.symbol}`);
       }
+      const listedAt = parseOptionalTimestamp(contract.launchTime);
       markets.push({
         venue: this.id,
         marketId: contract.symbol,
@@ -114,7 +117,7 @@ export class BitgetClient implements FundingVenueAdapter {
         nextFundingRate: funding.fundingRate,
         intervalHours: Number(funding.fundingRateInterval),
         nextFundingTime,
-        listedAt: parseTimestamp(contract.launchTime, 'launchTime')
+        ...(listedAt === undefined ? {} : { listedAt })
       });
     }
 
@@ -132,6 +135,7 @@ export class BitgetClient implements FundingVenueAdapter {
     const seen = new Set<string>();
     let pageNo = 1;
     let pageCount = 0;
+    let previousOldestFundingTime = Number.POSITIVE_INFINITY;
 
     while (true) {
       const page = this.parseEnvelope(
@@ -144,18 +148,18 @@ export class BitgetClient implements FundingVenueAdapter {
         })
       );
       pageCount += 1;
-      let addedRecord = false;
+      let oldestFundingTime = Number.POSITIVE_INFINITY;
       for (const settlement of page) {
         if (settlement.symbol !== request.market.marketId) {
           throw new VenueRequestError(this.id, `Unexpected Bitget funding history symbol ${settlement.symbol}`);
         }
         const fundingTime = parseTimestamp(settlement.fundingTime, 'fundingTime');
-        if (fundingTime <= request.startTime || fundingTime > request.endTime) continue;
         validateFundingRate(settlement.fundingRate, settlement.symbol);
+        oldestFundingTime = Math.min(oldestFundingTime, fundingTime);
+        if (fundingTime <= request.startTime || fundingTime > request.endTime) continue;
         const key = `${settlement.symbol}:${fundingTime}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        addedRecord = true;
         records.push({
           venue: this.id,
           marketId: settlement.symbol,
@@ -164,10 +168,12 @@ export class BitgetClient implements FundingVenueAdapter {
         });
       }
 
+      if (oldestFundingTime <= request.startTime) break;
       if (page.length < HISTORY_PAGE_SIZE) break;
-      if (!addedRecord) {
+      if (oldestFundingTime >= previousOldestFundingTime) {
         throw new VenueRequestError(this.id, 'Bitget funding history pagination stalled');
       }
+      previousOldestFundingTime = oldestFundingTime;
       pageNo += 1;
     }
     records.sort((left, right) => left.fundingTime - right.fundingTime);
@@ -204,6 +210,12 @@ function parseTimestamp(value: string, field: string): number {
     throw new VenueRequestError('bitget', `Invalid Bitget ${field}`);
   }
   return timestamp;
+}
+
+function parseOptionalTimestamp(value: string): number | undefined {
+  if (value.trim() === '') return undefined;
+  const timestamp = Number(value);
+  return Number.isSafeInteger(timestamp) ? timestamp : undefined;
 }
 
 function validateFundingRate(value: string, symbol: string): void {

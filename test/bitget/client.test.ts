@@ -20,12 +20,13 @@ const envelope = (data: unknown, code = '00000') => ({
 
 const contract = (
   symbol: string,
-  overrides: Partial<Record<'baseCoin' | 'launchTime' | 'quoteCoin' | 'symbolStatus', string>> = {}
+  overrides: Partial<Record<'baseCoin' | 'launchTime' | 'quoteCoin' | 'symbolStatus' | 'symbolType', string>> = {}
 ) => ({
   symbol,
   baseCoin: symbol.replace(/USDT$/, ''),
   quoteCoin: 'USDT',
   symbolStatus: 'normal',
+  symbolType: 'perpetual',
   launchTime: String(AS_OF - DAY),
   ...overrides
 });
@@ -112,13 +113,74 @@ test('fails the complete snapshot when an eligible contract has no current fundi
   await assert.rejects(client.getCurrentSnapshot(), /Missing Bitget current funding for ETHUSDT/);
 });
 
-test('requests numbered 100-row Bitget history pages and returns 168 hourly rows once in ascending order', async () => {
+test('excludes normal USDT delivery contracts from the perpetual current-funding join', async () => {
+  const client = new BitgetClient({
+    baseUrl,
+    fetch: queuedFetch([
+      jsonResponse(envelope([
+        contract('BTCUSDT'),
+        contract('BTCDELIVERY', { baseCoin: 'BTC', symbolType: 'delivery' })
+      ])),
+      jsonResponse(envelope([current('BTCUSDT')]))
+    ], []),
+    now: () => AS_OF,
+    sleep: async () => {}
+  });
+
+  const snapshot = await client.getCurrentSnapshot();
+
+  assert.deepEqual(snapshot.markets.map(({ marketId }) => marketId), ['BTCUSDT']);
+});
+
+test('omits unavailable blank contract launchTime instead of reporting epoch zero', async () => {
+  const client = new BitgetClient({
+    baseUrl,
+    fetch: queuedFetch([
+      jsonResponse(envelope([contract('BTCUSDT', { launchTime: '' })])),
+      jsonResponse(envelope([current('BTCUSDT')]))
+    ], []),
+    now: () => AS_OF,
+    sleep: async () => {}
+  });
+
+  const snapshot = await client.getCurrentSnapshot();
+
+  assert.equal(snapshot.markets[0]?.listedAt, undefined);
+});
+
+test('stops after a full descending page covers the seven-day window for an established eight-hour market', async () => {
   const seen: SeenRequest[] = [];
-  const firstPage = Array.from({ length: 100 }, (_, index) => history(AS_OF - (167 - index) * HOUR));
-  const secondPage = [history(AS_OF - 68 * HOUR), ...Array.from(
-    { length: 68 },
-    (_, index) => history(AS_OF - (67 - index) * HOUR, index === 0 ? '0.0002' : '0.0001')
-  )];
+  const establishedPage = Array.from(
+    { length: 100 },
+    (_, index) => history(AS_OF - index * 8 * HOUR)
+  );
+  const client = new BitgetClient({
+    baseUrl,
+    fetch: queuedFetch([jsonResponse(envelope(establishedPage))], seen),
+    sleep: async () => {}
+  });
+
+  const result = await client.getFundingHistory({
+    market: { ...venueMarket('bitget', 'BTC'), marketId: 'BTCUSDT' },
+    startTime: AS_OF - 7 * DAY,
+    endTime: AS_OF
+  });
+
+  assert.deepEqual(result.records.map(({ fundingTime }) => fundingTime), Array.from(
+    { length: 21 },
+    (_, index) => AS_OF - (20 - index) * 8 * HOUR
+  ));
+  assert.equal(result.completeFrom, AS_OF - 7 * DAY);
+  assert.deepEqual(seen.map(({ url }) => url.searchParams.get('pageNo')), ['1']);
+});
+
+test('stops after the descending hourly page that covers the seven-day window', async () => {
+  const seen: SeenRequest[] = [];
+  const firstPage = Array.from({ length: 100 }, (_, index) => history(AS_OF - index * HOUR));
+  const secondPage = Array.from(
+    { length: 100 },
+    (_, index) => history(AS_OF - (100 + index) * HOUR, index === 67 ? '0.0002' : '0.0001')
+  );
   const client = new BitgetClient({
     baseUrl,
     fetch: queuedFetch([
@@ -140,7 +202,7 @@ test('requests numbered 100-row Bitget history pages and returns 168 hourly rows
     { length: 168 },
     (_, index) => AS_OF - (167 - index) * HOUR
   ));
-  assert.equal(result.records.at(-68)?.fundingRate, '0.0002');
+  assert.equal(result.records.at(0)?.fundingRate, '0.0002');
   assert.deepEqual(seen.map(({ url }) => Object.fromEntries(url.searchParams)), [
     { symbol: 'BTCUSDT', productType: 'usdt-futures', pageSize: '100', pageNo: '1' },
     { symbol: 'BTCUSDT', productType: 'usdt-futures', pageSize: '100', pageNo: '2' }
@@ -148,7 +210,7 @@ test('requests numbered 100-row Bitget history pages and returns 168 hourly rows
 });
 
 test('rejects a full Bitget history page that contains no new settlement keys', async () => {
-  const firstPage = Array.from({ length: 100 }, (_, index) => history(AS_OF - (100 - index) * HOUR));
+  const firstPage = Array.from({ length: 100 }, (_, index) => history(AS_OF - index * HOUR));
   const duplicatePage = Array.from({ length: 100 }, () => history(AS_OF - HOUR));
   const client = new BitgetClient({
     baseUrl,
@@ -161,13 +223,13 @@ test('rejects a full Bitget history page that contains no new settlement keys', 
 
   await assert.rejects(client.getFundingHistory({
     market: { ...venueMarket('bitget', 'BTC'), marketId: 'BTCUSDT' },
-    startTime: AS_OF - DAY,
+    startTime: AS_OF - 365 * DAY,
     endTime: AS_OF
   }), /Bitget funding history pagination stalled/);
 });
 
 test('rejects a repeated full Bitget history page instead of looping', async () => {
-  const firstPage = Array.from({ length: 100 }, (_, index) => history(AS_OF - (100 - index) * HOUR));
+  const firstPage = Array.from({ length: 100 }, (_, index) => history(AS_OF - index * HOUR));
   const client = new BitgetClient({
     baseUrl,
     fetch: queuedFetch([
@@ -179,7 +241,7 @@ test('rejects a repeated full Bitget history page instead of looping', async () 
 
   await assert.rejects(client.getFundingHistory({
     market: { ...venueMarket('bitget', 'BTC'), marketId: 'BTCUSDT' },
-    startTime: AS_OF - 7 * DAY,
+    startTime: AS_OF - 365 * DAY,
     endTime: AS_OF
   }), /Bitget funding history pagination stalled/);
 });
