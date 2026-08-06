@@ -5,5 +5,9 @@ dist/
 !.env.example
 .superpowers/
 data/*.tmp
+/state.json
+/state.json.*.tmp
+/state.json.corrupt-*
+/state.json.lock/
 coverage/
 .worktrees/

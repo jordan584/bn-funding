@@ -28,20 +28,19 @@ npm run build
 
 ## Server setup and secrets
 
-Create the durable state directory as the same user that runs PM2. Replace
-`bnfunding` with that account if needed:
-
-```bash
-sudo install -d -m 0750 -o bnfunding -g bnfunding /var/lib/bn-funding
-```
-
-The process needs these three environment values:
+The only required environment value is the Google Chat Webhook:
 
 ```dotenv
 GOOGLE_CHAT_WEBHOOK_URL=
-STATE_FILE=/var/lib/bn-funding/state.json
-TZ=Asia/Shanghai
 ```
+
+The service stores duplicate-prevention state in `./state.json` by default and
+creates it, its lock directory, and any temporary files automatically. These
+runtime files are ignored by Git. `TZ=Asia/Shanghai` is already set by the PM2
+ecosystem file and is also the application default.
+
+`STATE_FILE` remains an optional advanced override. When supplied in daemon or
+send mode, it must be an absolute path.
 
 Supply `GOOGLE_CHAT_WEBHOOK_URL` through the server's secret manager or the
 PM2 user's protected environment, never through a tracked file. For an
@@ -53,12 +52,10 @@ printf '%s' 'Google Chat Webhook: ' >&2
 IFS= read -r -s GOOGLE_CHAT_WEBHOOK_URL
 printf '\n' >&2
 export GOOGLE_CHAT_WEBHOOK_URL
-export STATE_FILE=/var/lib/bn-funding/state.json
-export TZ=Asia/Shanghai
 pm2 start ecosystem.config.cjs --update-env
 ```
 
-PM2 must be started as the account that owns `/var/lib/bn-funding`; the
+PM2 must be started as an account that can write to the project directory; the
 included ecosystem file runs exactly one `bn-funding` fork instance.
 
 ## Operations
@@ -165,7 +162,7 @@ first and expect a possible resend for the active slot:
 
 ```bash
 pm2 stop bn-funding
-mv /var/lib/bn-funding/state.json /var/lib/bn-funding/state.json.corrupt-$(date +%Y%m%d%H%M%S)
+mv state.json state.json.corrupt-$(date +%Y%m%d%H%M%S)
 pm2 start ecosystem.config.cjs --update-env
 pm2 save
 ```

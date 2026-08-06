@@ -8,7 +8,6 @@ import { log } from '../src/logger.js';
 const validDaemonEnv = {
   GOOGLE_CHAT_WEBHOOK_URL:
     'https://chat.googleapis.com/v1/spaces/space/messages?key=k&token=t',
-  STATE_FILE: '/var/lib/bn-funding/state.json',
   TZ: 'Asia/Shanghai'
 };
 
@@ -29,28 +28,26 @@ test('daemon configuration is production-safe', () => {
   assert.equal(config.exchangeTimeoutMs, 10_000);
   assert.equal(config.chatTimeoutMs, 15_000);
   assert.equal(config.catchUpWindowMs, 30 * 60_000);
+  assert.equal(config.stateFile, path.resolve('state.json'));
 });
 
 for (const mode of ['daemon', 'send'] as const) {
-  test(`${mode} rejects a missing state file`, () => {
-    assert.throws(
-      () => loadConfig({
-        GOOGLE_CHAT_WEBHOOK_URL: validDaemonEnv.GOOGLE_CHAT_WEBHOOK_URL
-      }, mode),
-      /STATE_FILE/
-    );
+  test(`${mode} defaults state to the current project directory`, () => {
+    const config = loadConfig(validDaemonEnv, mode);
+
+    assert.equal(config.stateFile, path.resolve('state.json'));
   });
 
   test(`${mode} rejects a relative state file`, () => {
     assert.throws(
-      () => loadConfig({ ...validDaemonEnv, STATE_FILE: 'data/state.json' }, mode),
+      () => loadConfig({ ...validDaemonEnv, STATE_FILE: 'custom-state.json' }, mode),
       /STATE_FILE must be an absolute path/
     );
   });
 
   test(`${mode} rejects a missing Google Chat Webhook`, () => {
     assert.throws(
-      () => loadConfig({ STATE_FILE: '/var/lib/bn-funding/state.json' }, mode),
+      () => loadConfig({}, mode),
       /GOOGLE_CHAT_WEBHOOK_URL/
     );
   });
@@ -74,7 +71,7 @@ test('dry-run configuration permits no Webhook and uses its isolated state defau
   const config = loadConfig({ TZ: 'Asia/Shanghai' }, 'dry-run');
 
   assert.equal(config.googleChatWebhookUrl, undefined);
-  assert.equal(config.stateFile, path.resolve('data/state.json'));
+  assert.equal(config.stateFile, path.resolve('state.json'));
 });
 
 test('log emits one JSON line and safely serializes errors', () => {

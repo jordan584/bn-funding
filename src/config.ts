@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { AppConfig, RunMode } from './domain.js';
 
 const GOOGLE_CHAT_HOST = 'chat.googleapis.com';
-const DEFAULT_STATE_FILE = path.resolve('data/state.json');
+const DEFAULT_STATE_FILE = path.resolve('state.json');
 
 function isGoogleChatWebhook(url: URL): boolean {
   return url.protocol === 'https:' && url.hostname === GOOGLE_CHAT_HOST;
@@ -35,9 +35,6 @@ export function loadConfig(env: NodeJS.ProcessEnv, mode: RunMode): AppConfig {
   const webhookValue = env.GOOGLE_CHAT_WEBHOOK_URL?.trim();
   const needsDeliveryConfig = mode === 'daemon' || mode === 'send';
 
-  if (needsDeliveryConfig && !stateFile) {
-    throw new Error('STATE_FILE is required in daemon and send modes');
-  }
   if (needsDeliveryConfig && stateFile !== undefined && !path.isAbsolute(stateFile)) {
     throw new Error('STATE_FILE must be an absolute path in daemon and send modes');
   }
