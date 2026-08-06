@@ -124,6 +124,7 @@ test('uses the instrument interval when the current ticker omits its interval', 
       jsonResponse(envelope({ list: [instrument('BTCUSDT', { fundingInterval: 60 })], nextPageCursor: '' })),
       jsonResponse(envelope({ category: 'linear', list: [tickerWithoutInterval] }))
     ], []),
+    now: () => AS_OF,
     sleep: async () => {}
   });
 
@@ -139,6 +140,7 @@ test('fails the complete snapshot when an eligible contract has no current ticke
       jsonResponse(envelope({ list: [instrument('BTCUSDT'), instrument('ETHUSDT')], nextPageCursor: '' })),
       jsonResponse(envelope({ category: 'linear', list: [ticker('BTCUSDT')] }))
     ], []),
+    now: () => AS_OF,
     sleep: async () => {}
   });
 
