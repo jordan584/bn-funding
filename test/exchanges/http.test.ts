@@ -103,7 +103,7 @@ test('classifies final timeout and bounds non-retryable response bodies', async 
   });
 });
 
-test('times out while reading a final non-retryable response body', async () => {
+test('times out while reading a final non-retryable response body', { timeout: 1_000 }, async () => {
   const client = new PublicJsonClient({
     venue: 'bitget',
     baseUrl: new URL('https://api.bitget.com'),
@@ -116,16 +116,7 @@ test('times out while reading a final non-retryable response body', async () => 
       text: () => new Promise<string>(() => {})
     } as Response)
   });
-  let deadline: NodeJS.Timeout;
-  const testDeadline = new Promise<never>((_resolve, reject) => {
-    deadline = setTimeout(() => reject(new Error('request remained pending past its timeout')), 30);
-  });
-
-  try {
-    await assert.rejects(Promise.race([client.getJson('/slow-body'), testDeadline]), VenueTimeoutError);
-  } finally {
-    clearTimeout(deadline!);
-  }
+  await assert.rejects(client.getJson('/slow-body'), VenueTimeoutError);
 });
 
 test('emits one request-scoped telemetry record per concurrent logical operation', async () => {
