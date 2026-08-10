@@ -2,9 +2,10 @@
 
 This service ranks assets by the equal-weight average of estimated next-Funding
 APR across Binance, OKX, Hyperliquid, Bybit, and Bitget. An asset must be listed
-on at least two of those approved venues to qualify. Each run posts one Google
-Chat message containing two mobile-readable Top10 cards and runs in the
-`Asia/Shanghai` timezone.
+on at least two of those approved venues to qualify. Each run generates two
+mobile-readable Top10 PNG tables, publishes them to this repository's public
+image branch, and posts both images in one Google Chat message. The service runs
+in the `Asia/Shanghai` timezone.
 
 ## Prerequisites
 
@@ -16,6 +17,10 @@ Chat message containing two mobile-readable Top10 cards and runs in the
 - A Google Chat incoming Webhook for the destination space. Treat its URL as a
   secret: do not commit it, put it in `.env.example`, paste it into commands
   stored in shell history, or copy it into logs.
+- A fine-grained GitHub Token scoped to this repository with `Contents: Read and
+  write` and `Metadata: Read-only`. Treat it as a secret.
+- This repository must be public so Google Chat can fetch the generated
+  `raw.githubusercontent.com` image URLs without authentication.
 
 Install and verify the project from its checkout:
 
@@ -28,11 +33,17 @@ npm run build
 
 ## Server setup and secrets
 
-The only required environment value is the Google Chat Webhook:
+Create `~/bn-funding/.env` with these values:
 
 ```dotenv
-GOOGLE_CHAT_WEBHOOK_URL=
+GOOGLE_CHAT_WEBHOOK_URL='https://chat.googleapis.com/...'
+GITHUB_TOKEN='github_pat_...'
+GITHUB_REPOSITORY='jordan584/bn-funding'
+GITHUB_IMAGE_BRANCH='funding-images'
 ```
+
+Protect it with `chmod 600 .env`. The daemon and one-off CLI load this file
+automatically; values already exported by PM2 or the shell take precedence.
 
 The service stores duplicate-prevention state in `./state.json` by default and
 creates it, its lock directory, and any temporary files automatically. These
@@ -41,19 +52,6 @@ ecosystem file and is also the application default.
 
 `STATE_FILE` remains an optional advanced override. When supplied in daemon or
 send mode, it must be an absolute path.
-
-Supply `GOOGLE_CHAT_WEBHOOK_URL` through the server's secret manager or the
-PM2 user's protected environment, never through a tracked file. For an
-interactive first setup, enter it without echoing it to the terminal and start
-PM2 from the same shell:
-
-```bash
-printf '%s' 'Google Chat Webhook: ' >&2
-IFS= read -r -s GOOGLE_CHAT_WEBHOOK_URL
-printf '\n' >&2
-export GOOGLE_CHAT_WEBHOOK_URL
-pm2 start ecosystem.config.cjs --update-env
-```
 
 PM2 must be started as an account that can write to the project directory; the
 included ecosystem file runs exactly one `bn-funding` fork instance.
@@ -73,8 +71,8 @@ pm2 logs bn-funding
 
 `pm2 status` should show exactly one `bn-funding` process in `fork` mode. The
 scheduled run is `5 0,8,16 * * *` in Asia/Shanghai: 00:05, 08:05, and 16:05
-Beijing time. On restart, the daemon catches up only the most recent missed
-slot and only when it is within 30 minutes and has not already completed.
+Beijing time. On startup, the daemon immediately publishes the most recent slot
+if it has not already completed; ordinary restarts after success do not resend.
 
 Before connecting Chat, verify all five live public-data paths after a build:
 
@@ -110,7 +108,7 @@ npm run push:once -- --force
 unset GOOGLE_CHAT_WEBHOOK_URL
 ```
 
-Confirm exactly one Google Chat message arrives with two Top10 cards. The rank
+Confirm exactly one Google Chat message arrives with two Top10 images. The rank
 must be the equal-weight average of estimated next-Funding APR across the five
 approved venues, using only assets covered by at least two venues. On both
 desktop and mobile, verify all 20 assets are visible and every asset shows all
@@ -125,7 +123,7 @@ missing-data forms are distinct:
 - A numeric `7日均` ending in `*` means usable settled history exists but covers
   less than seven days.
 
-Confirm the card footnotes explain that next Funding is the current estimate
+Confirm the image footnotes explain that next Funding is the current estimate
 with APR in parentheses and that `*` marks history shorter than seven days.
 Remove the test Webhook from the secret manager or the PM2/server environment
 after validation; it must not remain in shell history or a tracked file.
@@ -141,7 +139,8 @@ run, so the service never sends a partial-weight message. Confirm connectivity
 to the public API named in the error and wait for that venue to recover. The
 failed run does not mark the slot successful. After recovery, allow the next
 scheduled run, use the 30-minute restart catch-up window when applicable, or
-run `npm run push:once` manually. Do not force a partial run; `--force` bypasses
+run `npm run push:once` manually. Restarting also attempts the latest unsent
+slot immediately. Do not force a partial run; `--force` bypasses
 only duplicate-slot prevention and should be used only when you deliberately
 accept a duplicate message.
 
@@ -153,6 +152,15 @@ Chat space before retrying. If no message arrived, run `npm run push:once` to
 send it. If the result is uncertain, only run `npm run push:once -- --force`
 when a possible duplicate is acceptable. Recheck the Webhook's validity and
 the PM2 environment for non-2xx responses, without printing the secret URL.
+
+### GitHub image upload failure
+
+Confirm the repository is public and the Token still has `Contents: Read and
+write` access to `jordan584/bn-funding`. Check that `GITHUB_REPOSITORY` and
+`GITHUB_IMAGE_BRANCH` match the deployment. The first successful upload creates
+the `funding-images` branch; later runs write PNG paths under
+`reports/YYYY/MM/DD/`. Upload failures do not call Chat and do not mark the slot
+successful, so retry with `npm run push:once` after correcting access.
 
 ### Corrupt state file
 

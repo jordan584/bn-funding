@@ -24,7 +24,9 @@ import {
   type VenueSnapshot
 } from '../src/domain.js';
 import { VenueRequestError, VenueTimeoutError } from '../src/exchanges/http.js';
+import type { FundingReportImage } from '../src/image/funding-report.js';
 import { runFundingJob, type FundingJobDeps } from '../src/job.js';
+import { GitHubImagePublisher } from '../src/github/image-publisher.js';
 import { FileRunStateStore } from '../src/state/store.js';
 import { AS_OF, DAY } from './helpers/fixtures.js';
 
@@ -105,6 +107,22 @@ function dependencies(lastSuccessfulSlot: string | null = null, options: FakeOpt
   const chat = {
     send: async () => { calls.push('chat.send'); }
   } as unknown as GoogleChatClient;
+  const renderImages = async (): Promise<FundingReportImage[]> => {
+    calls.push('images.render');
+    return [
+      { range: '1-10', png: Buffer.from('one') },
+      { range: '11-20', png: Buffer.from('two') }
+    ];
+  };
+  const imagePublisher = {
+    publish: async () => {
+      calls.push('images.publish');
+      return {
+        first: 'https://raw.githubusercontent.com/jordan/repo/images/one.png',
+        second: 'https://raw.githubusercontent.com/jordan/repo/images/two.png'
+      };
+    }
+  };
   const state = {
     withRunLock: async <T>(work: () => Promise<T>) => work(),
     getLastSuccessfulSlot: async () => { calls.push('state.read'); return lastSuccessfulSlot; },
@@ -115,7 +133,9 @@ function dependencies(lastSuccessfulSlot: string | null = null, options: FakeOpt
     warn: () => {},
     error: (event, fields) => { logs.push({ event, ...(fields === undefined ? {} : { fields }) }); }
   };
-  const deps: FundingJobDeps = { venues, chat, state, now: () => JOB_AS_OF, logger };
+  const deps: FundingJobDeps = {
+    venues, chat, state, renderImages, imagePublisher, now: () => JOB_AS_OF, logger
+  };
   return { deps, calls, logs };
 }
 
@@ -247,7 +267,7 @@ test('a zero-market core venue fails before selected history or Chat', async () 
   assert.equal(calls.includes('state.write'), false);
 });
 
-test('sends after current-rank-history-card and commits state only after Chat succeeds', async () => {
+test('renders, publishes, sends, and commits state in that order', async () => {
   const { deps, calls, logs } = dependencies();
 
   const result = await runFundingJob(deps, jobOptions());
@@ -259,7 +279,7 @@ test('sends after current-rank-history-card and commits state only after Chat su
     ['binance.current', 'bitget.current', 'bybit.current', 'hyperliquid.current', 'okx.current']
   );
   assert.equal(calls.filter((call) => call.includes('.history:')).length, 100);
-  assert.deepEqual(calls.slice(-2), ['chat.send', 'state.write']);
+  assert.deepEqual(calls.slice(-4), ['images.render', 'images.publish', 'chat.send', 'state.write']);
 
   const completed = logs.find((entry) => entry.event === 'funding_job.completed');
   assert.equal(completed?.fields?.trigger, 'manual');
@@ -275,6 +295,7 @@ test('sends after current-rank-history-card and commits state only after Chat su
     'rankDurationMs',
     'historyFetchDurationMs',
     'cardBuildDurationMs',
+    'imageUploadDurationMs',
     'webhookDurationMs',
     'payloadBytes'
   ]) {
@@ -429,14 +450,20 @@ test('preserves completed history and retry progress when selected history fails
   assert.equal(typeof venues.okx.historyStageDurationMs, 'number');
 });
 
-test('logs the attempted byte count when an oversized Chat payload fails to build', async () => {
-  const { deps, logs } = dependencies(null, { assetLength: 1_600 });
+test('does not send or commit when GitHub image publication fails', async () => {
+  const { deps, logs, calls } = dependencies();
+  deps.imagePublisher!.publish = async () => {
+    calls.push('images.publish');
+    throw new Error('GitHub image upload failed');
+  };
 
-  await assert.rejects(runFundingJob(deps, jobOptions({ force: true })), /exceeds 32000 bytes/);
+  await assert.rejects(runFundingJob(deps, jobOptions({ force: true })), /GitHub image upload failed/);
 
+  assert.equal(calls.includes('chat.send'), false);
+  assert.equal(calls.includes('state.write'), false);
   const fields = logs.find(({ event }) => event === 'funding_job.failed')?.fields;
-  assert.equal(typeof fields?.payloadBytes, 'number');
-  assert.ok((fields?.payloadBytes as number) >= 32_000);
+  assert.equal(fields?.stage, 'image-upload');
+  assert.equal(fields?.errorCategory, 'github-image-upload');
   assert.equal(fields?.pushResult, 'not-attempted');
 });
 
@@ -599,7 +626,9 @@ const failureCases: FailureCase[] = [
       throw new VenueRequestError('bybit', 'Bybit funding history failed');
     };
   }],
-  ['payload overflow', 'card-build', 'chat-payload', JOB_AS_OF, { assetLength: 1_600 }, () => {}],
+  ['image rendering rejection', 'card-build', 'chat-payload', JOB_AS_OF, {}, (deps) => {
+    deps.renderImages = async () => { throw new Error('image rendering failed'); };
+  }],
   ['Google Chat non-2xx failure', 'webhook', 'google-chat-request', JOB_AS_OF, {}, (deps) => {
     (deps.chat as unknown as { send(): Promise<void> }).send = async () => {
       throw new GoogleChatRequestError('Google Chat request failed: POST returned 500', 500);
@@ -636,6 +665,7 @@ for (const [name, expectedStage, expectedCategory, expectedAsOf, options, change
     assert.equal(typeof fields.rankDurationMs, 'number');
     assert.equal(typeof fields.historyFetchDurationMs, 'number');
     assert.equal(typeof fields.cardBuildDurationMs, 'number');
+    assert.equal(typeof fields.imageUploadDurationMs, 'number');
     assert.equal(typeof fields.webhookDurationMs, 'number');
     assert.ok(fields.venues !== undefined);
   });
@@ -664,6 +694,11 @@ test('createApp assembles all five configured venue adapters', () => {
       bitget: new URL('https://api.bitget.com')
     },
     googleChatWebhookUrl: new URL('https://chat.googleapis.com/v1/spaces/space/messages?key=k&token=t'),
+    github: {
+      token: 'github_pat_test',
+      repository: 'jordan584/bn-funding',
+      branch: 'funding-images'
+    },
     stateFile: '/tmp/bn-funding-state.json',
     timezone: 'Asia/Shanghai',
     schedule: '5 0,8,16 * * *',
@@ -678,6 +713,8 @@ test('createApp assembles all five configured venue adapters', () => {
   assert.equal(app.venues.bybit.constructor.name, 'BybitClient');
   assert.equal(app.venues.bitget.constructor.name, 'BitgetClient');
   assert.ok(app.chat instanceof GoogleChatClient);
+  assert.ok(app.imagePublisher instanceof GitHubImagePublisher);
+  assert.equal(typeof app.renderImages, 'function');
   assert.ok(app.state instanceof FileRunStateStore);
 });
 

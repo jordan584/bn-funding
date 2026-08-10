@@ -1,8 +1,5 @@
 import { BinanceRequestError, BinanceTimeoutError } from './binance/client.js';
-import {
-  buildFundingChatMessage,
-  GoogleChatPayloadSizeError
-} from './chat/multi-venue-cards.js';
+import { buildFundingImageChatMessage } from './chat/image-message.js';
 import {
   GoogleChatClient,
   GoogleChatRequestError,
@@ -10,6 +7,7 @@ import {
 } from './chat/client.js';
 import {
   VENUE_IDS,
+  type CompositeFundingLeaderboard,
   type CompositeFundingRow,
   type FundingVenueAdapter,
   type JobResult,
@@ -31,6 +29,8 @@ import {
 } from './funding/history.js';
 import { renderLeaderboardText } from './funding/multi-venue-format.js';
 import { FileRunStateStore } from './state/store.js';
+import type { GitHubImagePublisher } from './github/image-publisher.js';
+import type { FundingReportImage } from './image/funding-report.js';
 
 type JobStage =
   | 'state-lock'
@@ -39,6 +39,7 @@ type JobStage =
   | 'rank'
   | 'history-fetch'
   | 'card-build'
+  | 'image-upload'
   | 'webhook'
   | 'state-commit';
 
@@ -47,6 +48,7 @@ interface StageDurations {
   rankDurationMs: number;
   historyFetchDurationMs: number;
   cardBuildDurationMs: number;
+  imageUploadDurationMs: number;
   webhookDurationMs: number;
 }
 
@@ -82,6 +84,8 @@ interface JobOperationalFields {
 export interface FundingJobDeps {
   venues: Record<VenueId, FundingVenueAdapter>;
   chat?: GoogleChatClient;
+  renderImages?: (leaderboard: CompositeFundingLeaderboard) => Promise<FundingReportImage[]>;
+  imagePublisher?: Pick<GitHubImagePublisher, 'publish'>;
   state: FileRunStateStore;
   now: () => number;
   logger: Logger;
@@ -117,6 +121,8 @@ function failureCategory(stage: JobStage, error: unknown): string {
       return 'funding-history';
     case 'card-build':
       return 'chat-payload';
+    case 'image-upload':
+      return 'github-image-upload';
     case 'webhook':
       if (error instanceof GoogleChatTimeoutError) return 'google-chat-timeout';
       if (error instanceof GoogleChatRequestError) return 'google-chat-request';
@@ -234,6 +240,7 @@ export async function runFundingJob(
     rankDurationMs: 0,
     historyFetchDurationMs: 0,
     cardBuildDurationMs: 0,
+    imageUploadDurationMs: 0,
     webhookDurationMs: 0
   };
 
@@ -341,11 +348,6 @@ export async function runFundingJob(
         }
       })
     );
-    const message = measureSync('card-build', 'cardBuildDurationMs', () =>
-      buildFundingChatMessage(hydrated.leaderboard)
-    );
-    operationalFields.payloadBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
-
     if (options.dryRun) {
       operationalFields.pushResult = 'skipped-dry-run';
       return {
@@ -356,10 +358,18 @@ export async function runFundingJob(
       };
     }
 
-    if (deps.chat === undefined) {
+    if (deps.chat === undefined || deps.renderImages === undefined || deps.imagePublisher === undefined) {
       currentStage = 'webhook';
-      throw new Error('Google Chat client is required when sending');
+      throw new Error('Image renderer, GitHub publisher, and Google Chat client are required when sending');
     }
+    const renderedImages = await measureAsync('card-build', 'cardBuildDurationMs', () =>
+      deps.renderImages!(hydrated.leaderboard)
+    );
+    const publishedImages = await measureAsync('image-upload', 'imageUploadDurationMs', () =>
+      deps.imagePublisher!.publish(renderedImages, options.slot)
+    );
+    const message = buildFundingImageChatMessage(hydrated.leaderboard.asOf, publishedImages);
+    operationalFields.payloadBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
     operationalFields.pushResult = 'attempted';
     try {
       await measureAsync('webhook', 'webhookDurationMs', () => deps.chat!.send(message));
@@ -400,9 +410,6 @@ export async function runFundingJob(
     });
     return result;
   } catch (error) {
-    if (error instanceof GoogleChatPayloadSizeError) {
-      operationalFields.payloadBytes = error.payloadBytes;
-    }
     deps.logger.error('funding_job.failed', {
       slot: options.slot.key,
       trigger: options.trigger,

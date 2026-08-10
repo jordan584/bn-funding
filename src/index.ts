@@ -9,6 +9,7 @@ import type { AppConfig } from './domain.js';
 import type { FundingJobDeps } from './job.js';
 import { startScheduler as defaultStartScheduler } from './scheduler.js';
 import type { CronAdapter, SchedulerDeps, SchedulerHandle } from './scheduler.js';
+import { loadProjectEnv } from './env.js';
 
 interface SignalSource {
   once(signal: NodeJS.Signals, listener: () => void): unknown;
@@ -50,5 +51,6 @@ export async function startDaemon(deps: DaemonDeps = {}): Promise<SchedulerHandl
 
 const invokedPath = process.argv[1];
 if (invokedPath !== undefined && import.meta.url === pathToFileURL(path.resolve(invokedPath)).href) {
+  loadProjectEnv();
   void startDaemon();
 }

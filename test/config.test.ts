@@ -8,6 +8,9 @@ import { log } from '../src/logger.js';
 const validDaemonEnv = {
   GOOGLE_CHAT_WEBHOOK_URL:
     'https://chat.googleapis.com/v1/spaces/space/messages?key=k&token=t',
+  GITHUB_TOKEN: 'github_pat_test',
+  GITHUB_REPOSITORY: 'jordan584/bn-funding',
+  GITHUB_IMAGE_BRANCH: 'funding-images',
   TZ: 'Asia/Shanghai'
 };
 
@@ -29,6 +32,8 @@ test('daemon configuration is production-safe', () => {
   assert.equal(config.chatTimeoutMs, 15_000);
   assert.equal(config.catchUpWindowMs, 30 * 60_000);
   assert.equal(config.stateFile, path.resolve('state.json'));
+  assert.equal(config.github?.repository, 'jordan584/bn-funding');
+  assert.equal(config.github?.branch, 'funding-images');
 });
 
 for (const mode of ['daemon', 'send'] as const) {
@@ -52,6 +57,13 @@ for (const mode of ['daemon', 'send'] as const) {
     );
   });
 
+  test(`${mode} rejects missing GitHub image credentials`, () => {
+    assert.throws(
+      () => loadConfig({ GOOGLE_CHAT_WEBHOOK_URL: validDaemonEnv.GOOGLE_CHAT_WEBHOOK_URL }, mode),
+      /GITHUB_TOKEN/
+    );
+  });
+
   test(`${mode} rejects a non-HTTPS Google Chat Webhook without leaking it`, () => {
     const webhook = 'http://chat.googleapis.com/v1/spaces/space/messages?token=secret';
 
@@ -71,6 +83,7 @@ test('dry-run configuration permits no Webhook and uses its isolated state defau
   const config = loadConfig({ TZ: 'Asia/Shanghai' }, 'dry-run');
 
   assert.equal(config.googleChatWebhookUrl, undefined);
+  assert.equal(config.github, undefined);
   assert.equal(config.stateFile, path.resolve('state.json'));
 });
 

@@ -1,7 +1,7 @@
 import type { AppConfig, Logger, RunFundingJobOptions, ScheduledSlot } from './domain.js';
 import type { FundingJobDeps } from './job.js';
 import { runFundingJob as defaultRunFundingJob } from './job.js';
-import { mostRecentElapsedSlot, shouldCatchUp } from './schedule/slots.js';
+import { mostRecentElapsedSlot } from './schedule/slots.js';
 import { SingleFlight } from './schedule/single-flight.js';
 
 export interface CronTask {
@@ -82,12 +82,7 @@ export async function startScheduler(deps: SchedulerDeps): Promise<SchedulerHand
   const startupNow = now();
   const startupSlot = mostRecentElapsedSlot(startupNow, deps.config.timezone);
   const lastSuccessfulSlot = await deps.app.state.getLastSuccessfulSlot();
-  if (shouldCatchUp(
-    startupSlot,
-    lastSuccessfulSlot,
-    startupNow,
-    deps.config.catchUpWindowMs
-  )) {
+  if (lastSuccessfulSlot !== startupSlot.key) {
     void run(startupSlot, 'startup-catchup');
   }
 

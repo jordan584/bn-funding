@@ -12,6 +12,11 @@ export interface AppConfig {
   catchUpWindowMs: number;
   exchangeTimeoutMs: number;
   chatTimeoutMs: number;
+  github?: {
+    token: string;
+    repository: string;
+    branch: string;
+  };
 }
 
 export interface ExchangeSymbol {

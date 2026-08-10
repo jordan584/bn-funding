@@ -78,7 +78,7 @@ function schedulerFixture(overrides: { now?: () => number } = {}) {
     error: (event, fields) => { logs.push({ event, ...(fields === undefined ? {} : { fields }) }); }
   };
   const state = {
-    getLastSuccessfulSlot: async () => { events.push('state.read'); return null; }
+    getLastSuccessfulSlot: async () => { events.push('state.read'); return '2026-08-03T08'; }
   };
   const app = { state, logger } as unknown as FundingJobDeps;
   const cron = new FakeCron();
@@ -151,21 +151,30 @@ test('starts an 08:00 catch-up before cron registration when the prior slot succ
   }]);
 });
 
-test('does not catch up outside the window or after the elapsed slot already succeeded', async () => {
-  for (const [now, lastSuccessfulSlot] of [
-    ['2026-08-03 08:40', '2026-08-03T00'],
-    ['2026-08-03 08:20', '2026-08-03T08']
-  ] as const) {
-    const fixture = schedulerFixture({ now: () => beijingMs(now) });
-    fixture.deps.app = {
-      state: { getLastSuccessfulSlot: async () => lastSuccessfulSlot },
-      logger: (fixture.deps.app as FundingJobDeps).logger
-    } as FundingJobDeps;
+test('immediately runs an unsent startup slot even outside the old catch-up window', async () => {
+  const fixture = schedulerFixture({ now: () => beijingMs('2026-08-03 15:59') });
+  fixture.deps.app = {
+    state: { getLastSuccessfulSlot: async () => '2026-08-03T00' },
+    logger: (fixture.deps.app as FundingJobDeps).logger
+  } as FundingJobDeps;
 
-    await startScheduler(fixture.deps);
+  await startScheduler(fixture.deps);
 
-    assert.equal(fixture.options.length, 0, now);
-  }
+  assert.equal(fixture.options.length, 1);
+  assert.equal(fixture.options[0]!.slot.key, '2026-08-03T08');
+  assert.equal(fixture.options[0]!.trigger, 'startup-catchup');
+});
+
+test('does not resend the current slot when it already succeeded', async () => {
+  const fixture = schedulerFixture({ now: () => beijingMs('2026-08-03 15:59') });
+  fixture.deps.app = {
+    state: { getLastSuccessfulSlot: async () => '2026-08-03T08' },
+    logger: (fixture.deps.app as FundingJobDeps).logger
+  } as FundingJobDeps;
+
+  await startScheduler(fixture.deps);
+
+  assert.equal(fixture.options.length, 0);
 });
 
 test('uses one flight guard for startup catch-up and a cron callback', async () => {

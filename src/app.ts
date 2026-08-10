@@ -8,6 +8,8 @@ import type { FundingJobDeps } from './job.js';
 import { log } from './logger.js';
 import { OkxClient } from './okx/client.js';
 import { FileRunStateStore } from './state/store.js';
+import { GitHubImagePublisher } from './github/image-publisher.js';
+import { renderFundingReportImages } from './image/funding-report.js';
 
 function createLogger(): Logger {
   return {
@@ -47,6 +49,14 @@ export function createApp(config: AppConfig): FundingJobDeps {
         webhookUrl: config.googleChatWebhookUrl,
         timeoutMs: config.chatTimeoutMs
       }) }),
+    ...(config.github === undefined
+      ? {}
+      : { imagePublisher: new GitHubImagePublisher({
+        token: config.github.token,
+        repository: config.github.repository,
+        branch: config.github.branch
+      }) }),
+    renderImages: renderFundingReportImages,
     state: new FileRunStateStore(config.stateFile),
     now: Date.now,
     logger: createLogger()

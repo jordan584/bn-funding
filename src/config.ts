@@ -33,6 +33,9 @@ export function loadConfig(env: NodeJS.ProcessEnv, mode: RunMode): AppConfig {
 
   const stateFile = env.STATE_FILE?.trim();
   const webhookValue = env.GOOGLE_CHAT_WEBHOOK_URL?.trim();
+  const githubToken = env.GITHUB_TOKEN?.trim();
+  const githubRepository = env.GITHUB_REPOSITORY?.trim() || 'jordan584/bn-funding';
+  const githubBranch = env.GITHUB_IMAGE_BRANCH?.trim() || 'funding-images';
   const needsDeliveryConfig = mode === 'daemon' || mode === 'send';
 
   if (needsDeliveryConfig && stateFile !== undefined && !path.isAbsolute(stateFile)) {
@@ -41,6 +44,9 @@ export function loadConfig(env: NodeJS.ProcessEnv, mode: RunMode): AppConfig {
 
   if (needsDeliveryConfig && !webhookValue) {
     throw new Error('GOOGLE_CHAT_WEBHOOK_URL is required in daemon and send modes');
+  }
+  if (needsDeliveryConfig && !githubToken) {
+    throw new Error('GITHUB_TOKEN is required in daemon and send modes');
   }
 
   return {
@@ -52,6 +58,13 @@ export function loadConfig(env: NodeJS.ProcessEnv, mode: RunMode): AppConfig {
       bitget: new URL('https://api.bitget.com')
     },
     ...(webhookValue ? { googleChatWebhookUrl: parseGoogleChatWebhook(webhookValue) } : {}),
+    ...(githubToken ? {
+      github: {
+        token: githubToken,
+        repository: githubRepository,
+        branch: githubBranch
+      }
+    } : {}),
     stateFile: stateFile ?? DEFAULT_STATE_FILE,
     timezone,
     schedule: '5 0,8,16 * * *',

@@ -7,6 +7,7 @@ import type { RunMode } from './domain.js';
 import { runFundingJob } from './job.js';
 import { log } from './logger.js';
 import { mostRecentElapsedSlot } from './schedule/slots.js';
+import { loadProjectEnv } from './env.js';
 
 interface CliOptions {
   mode: Extract<RunMode, 'dry-run' | 'send'>;
@@ -58,5 +59,6 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
 const invokedPath = process.argv[1];
 if (invokedPath !== undefined && import.meta.url === pathToFileURL(path.resolve(invokedPath)).href) {
+  loadProjectEnv();
   void main();
 }

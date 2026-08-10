@@ -12,6 +12,7 @@ import { BybitClient } from '../../src/bybit/client.js';
 import { GoogleChatClient } from '../../src/chat/client.js';
 import type { GoogleChatMessage, Logger, ScheduledSlot } from '../../src/domain.js';
 import { HyperliquidClient } from '../../src/hyperliquid/client.js';
+import { renderFundingReportImages, type FundingReportImage } from '../../src/image/funding-report.js';
 import { runFundingJob } from '../../src/job.js';
 import { OkxClient } from '../../src/okx/client.js';
 import { FileRunStateStore } from '../../src/state/store.js';
@@ -59,25 +60,6 @@ function bybitEnvelope(result: unknown): unknown {
 
 function bitgetEnvelope(data: unknown): unknown {
   return { code: '00000', msg: 'success', requestTime: AS_OF, data };
-}
-
-function extractAssets(message: GoogleChatMessage): string[] {
-  return message.cardsV2.flatMap(({ card }) => {
-    const sections = card.sections as Array<{ widgets: Array<{ textParagraph?: { text: string } }> }>;
-    return sections.flatMap(({ widgets }) => widgets.flatMap((widget) => {
-      const match = widget.textParagraph?.text.match(/^<b>#\d+ ([A-Z0-9]+)<\/b>/);
-      return match === null || match === undefined ? [] : [match[1]!];
-    }));
-  });
-}
-
-function extractVenueLineCount(message: GoogleChatMessage): number {
-  return message.cardsV2.flatMap(({ card }) => {
-    const sections = card.sections as Array<{ widgets: Array<{ textParagraph?: { text: string } }> }>;
-    return sections.flatMap(({ widgets }) => widgets.flatMap((widget) => (
-      widget.textParagraph?.text.split('<br>') ?? []
-    )));
-  }).filter((line) => /^(Bn|OKX|Hyper|Bybit|Bitget) 下次 /.test(line)).length;
 }
 
 test('runs all five production adapters through local HTTP, sends once, then skips the duplicate slot', async (t) => {
@@ -293,6 +275,7 @@ test('runs all five production adapters through local HTTP, sends once, then ski
   assert.ok(address !== null && typeof address !== 'string');
   const baseUrl = new URL(`http://127.0.0.1:${address.port}`);
   const logger: Logger = { info: () => {}, warn: () => {}, error: () => {} };
+  let publishedImages: readonly FundingReportImage[] = [];
   const deps = {
     venues: {
       binance: new BinanceVenueAdapter({ baseUrl }),
@@ -300,6 +283,16 @@ test('runs all five production adapters through local HTTP, sends once, then ski
       hyperliquid: new HyperliquidClient({ baseUrl, now: () => AS_OF }),
       bybit: new BybitClient({ baseUrl, minRequestIntervalMs: 0, now: () => AS_OF }),
       bitget: new BitgetClient({ baseUrl, minRequestIntervalMs: 0, now: () => AS_OF })
+    },
+    renderImages: renderFundingReportImages,
+    imagePublisher: {
+      publish: async (images: readonly FundingReportImage[]) => {
+        publishedImages = images;
+        return {
+          first: 'https://raw.githubusercontent.com/jordan/repo/images/top-1-10.png',
+          second: 'https://raw.githubusercontent.com/jordan/repo/images/top-11-20.png'
+        };
+      }
     },
     chat: new GoogleChatClient({ webhookUrl: new URL('/webhook', baseUrl) }),
     state: new FileRunStateStore(stateFile),
@@ -317,8 +310,10 @@ test('runs all five production adapters through local HTTP, sends once, then ski
   assert.deepEqual(result, { status: 'sent', slot: slot.key, rowCount: 20 });
   assert.equal(webhookPayloads.length, 1);
   assert.equal(webhookPayloads[0]!.cardsV2.length, 2);
-  assert.deepEqual(extractAssets(webhookPayloads[0]!), assets);
-  assert.equal(extractVenueLineCount(webhookPayloads[0]!), 100);
+  assert.deepEqual(publishedImages.map(({ range }) => range), ['1-10', '11-20']);
+  assert.ok(publishedImages.every(({ png }) => png.subarray(1, 4).toString('ascii') === 'PNG'));
+  assert.match(JSON.stringify(webhookPayloads[0]), /top-1-10\.png/);
+  assert.match(JSON.stringify(webhookPayloads[0]), /top-11-20\.png/);
   assert.equal(stateExistedWhenWebhookReceived, false);
   assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).lastSuccessfulSlot, slot.key);
 
