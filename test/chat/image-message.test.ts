@@ -18,4 +18,8 @@ test('builds one compact Chat message with two ordered public image widgets', ()
   assert.match(serialized, /top-1-10\.png/);
   assert.match(serialized, /top-11-20\.png/);
   assert.equal((serialized.match(/imageUrl/g) ?? []).length, 2);
+  assert.equal((serialized.match(/"openLink"/g) ?? []).length, 4);
+  assert.equal((serialized.match(/查看高清原图/g) ?? []).length, 2);
+  assert.equal((serialized.match(/top-1-10\.png/g) ?? []).length, 3);
+  assert.equal((serialized.match(/top-11-20\.png/g) ?? []).length, 3);
 });

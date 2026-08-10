@@ -202,7 +202,7 @@ export async function renderFundingReportImages(
   ];
   return Promise.all(definitions.map(async ({ range, start, end }) => ({
     range,
-    png: await sharp(Buffer.from(renderFundingReportSvg(leaderboard, start, end)))
+    png: await sharp(Buffer.from(renderFundingReportSvg(leaderboard, start, end)), { density: 144 })
       .png({ compressionLevel: 9, adaptiveFiltering: true })
       .toBuffer()
   })));

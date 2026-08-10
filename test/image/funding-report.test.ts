@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { Decimal } from 'decimal.js';
+import sharp from 'sharp';
 
 import type { CompositeFundingLeaderboard, CompositeFundingRow, VenueId } from '../../src/domain.js';
 import {
@@ -77,5 +78,7 @@ test('renders exactly two non-empty PNG images for the two Top10 ranges', async 
   for (const { png } of images) {
     assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
     assert.ok(png.byteLength > 10_000);
+    const metadata = await sharp(png).metadata();
+    assert.equal(metadata.width, 2880);
   }
 });

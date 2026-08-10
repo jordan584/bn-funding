@@ -7,12 +7,24 @@ function imageCard(cardId: string, title: string, imageUrl: string): GoogleChatM
     card: {
       header: { title },
       sections: [{
-        widgets: [{
-          image: {
-            imageUrl,
-            altText: title
+        widgets: [
+          {
+            image: {
+              imageUrl,
+              altText: `${title}，点击打开高清原图`,
+              onClick: { openLink: { url: imageUrl } }
+            }
+          },
+          {
+            buttonList: {
+              buttons: [{
+                text: '查看高清原图',
+                altText: `在浏览器中打开 ${title} 高清原图`,
+                onClick: { openLink: { url: imageUrl } }
+              }]
+            }
           }
-        }]
+        ]
       }]
     }
   };
