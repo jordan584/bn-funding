@@ -82,3 +82,27 @@ test('renders exactly two non-empty PNG images for the two Top10 ranges', async 
     assert.equal(metadata.width, 2880);
   }
 });
+
+test('omits venues without data and shrinks each asset panel to its coverage rows', async () => {
+  const board = leaderboard();
+  for (const item of board.rows) {
+    item.venues = {
+      binance: item.venues.binance!,
+      bybit: item.venues.bybit!
+    };
+    item.coverageCount = 2;
+  }
+
+  const svg = renderFundingReportSvg(board, 0, 10);
+
+  assert.match(svg, />Bn</);
+  assert.match(svg, />Bybit</);
+  assert.doesNotMatch(svg, />OKX</);
+  assert.doesNotMatch(svg, />Hyper</);
+  assert.doesNotMatch(svg, />Bitget</);
+  assert.match(svg, /height="1926" viewBox="0 0 1440 1926"/);
+
+  const images = await renderFundingReportImages(board);
+  const metadata = await sharp(images[0]!.png).metadata();
+  assert.equal(metadata.height, 3852);
+});
