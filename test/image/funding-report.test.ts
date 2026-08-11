@@ -51,24 +51,29 @@ function leaderboard(): CompositeFundingLeaderboard {
   };
 }
 
-test('renders an escaped ten-asset SVG with all five venue columns and signed colors', () => {
+test('renders an escaped ten-asset SVG as a fixed eight-column summary table', () => {
   const svg = renderFundingReportSvg(leaderboard(), 0, 10);
 
   assert.match(svg, /Funding Top20 · #1–10/);
   assert.match(svg, /2026-08-10 16:05 CST/);
   assert.match(svg, /BTC&lt;&amp;/);
   assert.doesNotMatch(svg, /BTC<&/);
-  assert.match(svg, />Bn</);
+  assert.match(svg, />Asset</);
+  assert.match(svg, />Binance</);
   assert.match(svg, />OKX</);
   assert.match(svg, />Hyper</);
   assert.match(svg, />Bybit</);
   assert.match(svg, />Bitget</);
+  assert.match(svg, />7D \/ Day</);
+  assert.match(svg, />7D APR</);
   assert.match(svg, /\+0\.0100%/);
   assert.match(svg, /-0\.0200%/);
+  assert.match(svg, /APR \+10\.95%/);
+  assert.match(svg, /\+0\.0140%\*/);
+  assert.match(svg, /\+5\.11%\*/);
   assert.match(svg, /#ff6b6b/);
   assert.match(svg, /#2ed6a1/);
-  assert.match(svg, /\+9\.13%\*/);
-  assert.match(svg, /width="800" height="1892" viewBox="0 0 800 1892"/);
+  assert.match(svg, /width="800" height="826" viewBox="0 0 800 826"/);
   assert.equal((svg.match(/class="asset-symbol"/g) ?? []).length, 10);
 });
 
@@ -81,10 +86,11 @@ test('renders exactly two non-empty PNG images for the two Top10 ranges', async 
     assert.ok(png.byteLength > 10_000);
     const metadata = await sharp(png).metadata();
     assert.equal(metadata.width, 1600);
+    assert.equal(metadata.height, 1652);
   }
 });
 
-test('omits venues without data and shrinks each asset panel to its coverage rows', async () => {
+test('keeps fixed venue columns and renders missing venues as dashes', async () => {
   const board = leaderboard();
   for (const item of board.rows) {
     item.venues = {
@@ -96,14 +102,17 @@ test('omits venues without data and shrinks each asset panel to its coverage row
 
   const svg = renderFundingReportSvg(board, 0, 10);
 
-  assert.match(svg, />Bn</);
+  assert.match(svg, />Binance</);
   assert.match(svg, />Bybit</);
-  assert.doesNotMatch(svg, />OKX</);
-  assert.doesNotMatch(svg, />Hyper</);
-  assert.doesNotMatch(svg, />Bitget</);
-  assert.match(svg, /width="800" height="1232" viewBox="0 0 800 1232"/);
+  assert.match(svg, />OKX</);
+  assert.match(svg, />Hyper</);
+  assert.match(svg, />Bitget</);
+  assert.equal((svg.match(/>--<\/text>/g) ?? []).length, 30);
+  assert.match(svg, /\+0\.0250%/);
+  assert.match(svg, /\+9\.13%/);
+  assert.match(svg, /width="800" height="826" viewBox="0 0 800 826"/);
 
   const images = await renderFundingReportImages(board);
   const metadata = await sharp(images[0]!.png).metadata();
-  assert.equal(metadata.height, 2464);
+  assert.equal(metadata.height, 1652);
 });

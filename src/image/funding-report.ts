@@ -8,9 +8,9 @@ import type {
 } from '../domain.js';
 import {
   signedAprPercent,
-  signedFundingPercent,
-  VENUE_LABELS
+  signedFundingPercent
 } from '../funding/multi-venue-format.js';
+import { compositeSevenDay } from '../funding/seven-day-composite.js';
 
 export type FundingImageRange = '1-10' | '11-20';
 
@@ -21,18 +21,31 @@ export interface FundingReportImage {
 
 const WIDTH = 800;
 const PAGE_PADDING = 24;
-const HEADER_HEIGHT = 110;
-const ASSET_HEADER_HEIGHT = 36;
-const TABLE_HEADER_HEIGHT = 22;
-const VENUE_ROW_HEIGHT = 22;
-const ASSET_GAP = 6;
-const FOOTER_HEIGHT = 42;
-const VENUES: VenueId[] = ['binance', 'okx', 'hyperliquid', 'bybit', 'bitget'];
+const HEADER_HEIGHT = 104;
+const TABLE_HEADER_HEIGHT = 38;
+const ASSET_ROW_HEIGHT = 64;
+const FOOTER_HEIGHT = 44;
+const ROW_COUNT = 10;
+const HEIGHT = HEADER_HEIGHT + TABLE_HEADER_HEIGHT + ASSET_ROW_HEIGHT * ROW_COUNT + FOOTER_HEIGHT;
+
+const VENUES: Array<{ id: VenueId; label: string }> = [
+  { id: 'binance', label: 'Binance' },
+  { id: 'okx', label: 'OKX' },
+  { id: 'hyperliquid', label: 'Hyper' },
+  { id: 'bybit', label: 'Bybit' },
+  { id: 'bitget', label: 'Bitget' }
+];
+
+const COLUMN_BOUNDARIES = [24, 116, 212, 308, 404, 500, 596, 686, 776] as const;
+const COLUMN_CENTERS = COLUMN_BOUNDARIES.slice(0, -1).map(
+  (left, index) => (left + COLUMN_BOUNDARIES[index + 1]!) / 2
+);
 
 const COLORS = {
   background: '#0b1020',
   panel: '#151c2f',
   panelAlt: '#11182a',
+  rowAlt: '#131a2c',
   border: '#28334d',
   text: '#f3f6ff',
   muted: '#93a0bb',
@@ -90,89 +103,121 @@ function formatBeijingTime(timestamp: number): string {
   return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} CST`;
 }
 
-interface VenueCells {
-  nextFunding: string;
-  interval: string;
-  nextApr: string;
-  historyDaily: string;
-  historyApr: string;
-  nextSign: number;
-  historySign: number;
+function compactAsset(asset: string): string {
+  return asset.length <= 9 ? asset : `${asset.slice(0, 8)}…`;
 }
 
-function venueCells(metric: CompositeVenueFundingMetric | undefined): VenueCells {
+function assetFontSize(asset: string): number {
+  if (asset.length <= 6) return 15;
+  if (asset.length <= 8) return 13;
+  return 12;
+}
+
+function venueCell(metric: CompositeVenueFundingMetric | undefined, x: number, rowTop: number): string {
   if (metric === undefined) {
-    return {
-      nextFunding: '--', interval: '--', nextApr: '--', historyDaily: '--', historyApr: '--',
-      nextSign: 0, historySign: 0
-    };
+    return text(x, rowTop + 38, '--', { size: 15, fill: COLORS.muted, anchor: 'middle' });
   }
-  const partial = metric.partialSevenDayHistory ? '*' : '';
-  return {
-    nextFunding: signedFundingPercent(metric.nextFundingRate),
-    interval: `${metric.intervalHours}h`,
-    nextApr: signedAprPercent(metric.nextApr),
-    historyDaily: metric.sevenDayAverageDailyRate === null
-      ? `--${partial}`
-      : `${signedFundingPercent(metric.sevenDayAverageDailyRate)}${partial}`,
-    historyApr: metric.sevenDayApr === null
-      ? `--${partial}`
-      : `${signedAprPercent(metric.sevenDayApr)}${partial}`,
-    nextSign: metric.nextFundingRate.comparedTo(0),
-    historySign: metric.sevenDayAverageDailyRate?.comparedTo(0) ?? 0
-  };
+
+  const sign = metric.nextFundingRate.comparedTo(0);
+  return [
+    text(x, rowTop + 27, signedFundingPercent(metric.nextFundingRate), {
+      size: 14,
+      fill: valueColor(sign),
+      weight: 600,
+      anchor: 'middle'
+    }),
+    text(x, rowTop + 48, `APR ${signedAprPercent(metric.nextApr)}`, {
+      size: 11,
+      fill: valueColor(metric.nextApr.comparedTo(0)),
+      anchor: 'middle'
+    })
+  ].join('');
 }
 
-function presentVenues(row: CompositeFundingRow): VenueId[] {
-  return VENUES.filter((venue) => row.venues[venue] !== undefined);
+function summaryCell(
+  value: string,
+  sign: number,
+  venueCount: number,
+  x: number,
+  rowTop: number
+): string {
+  return [
+    text(x, rowTop + 29, value, {
+      size: 14,
+      fill: valueColor(sign),
+      weight: 700,
+      anchor: 'middle'
+    }),
+    text(x, rowTop + 48, venueCount > 0 ? `${venueCount} venues` : 'No history', {
+      size: 9,
+      fill: COLORS.muted,
+      anchor: 'middle'
+    })
+  ].join('');
 }
 
-function assetHeight(row: CompositeFundingRow): number {
-  return ASSET_HEADER_HEIGHT + TABLE_HEADER_HEIGHT + VENUE_ROW_HEIGHT * presentVenues(row).length;
-}
-
-function assetBlock(row: CompositeFundingRow, y: number): string {
-  const left = PAGE_PADDING;
-  const width = WIDTH - PAGE_PADDING * 2;
-  const columns = [36, 240, 326, 430, 594, 764];
-  const tableTop = y + ASSET_HEADER_HEIGHT;
-  const venues = presentVenues(row);
-  const height = assetHeight(row);
+function assetRow(row: CompositeFundingRow, index: number): string {
+  const rowTop = HEADER_HEIGHT + TABLE_HEADER_HEIGHT + index * ASSET_ROW_HEIGHT;
+  const summary = compositeSevenDay(row);
+  const suffix = summary.partialHistory ? '*' : '';
+  const dailyValue = summary.averageDailyRate === null
+    ? '--*'
+    : `${signedFundingPercent(summary.averageDailyRate)}${suffix}`;
+  const aprValue = summary.apr === null
+    ? '--*'
+    : `${signedAprPercent(summary.apr)}${suffix}`;
   const output = [
-    `<rect x="${left}" y="${y}" width="${width}" height="${height}" rx="10" fill="${COLORS.panel}" stroke="${COLORS.border}" stroke-opacity="0.72"/>`,
-    `<rect x="${left}" y="${tableTop}" width="${width}" height="${TABLE_HEADER_HEIGHT}" fill="${COLORS.panelAlt}"/>`,
-    text(left + 18, y + 25, `#${row.rank}`, { size: 18, fill: COLORS.accent, weight: 700 }),
-    text(left + 74, y + 25, row.asset, { size: 20, weight: 700, className: 'asset-symbol' }),
-    text(320, y + 24, 'Composite', { size: 14, fill: COLORS.muted }),
-    text(520, y + 25, signedAprPercent(row.compositeNextApr), {
-      size: 19, fill: valueColor(row.compositeNextApr.comparedTo(0)), weight: 700, anchor: 'end'
+    `<rect x="${PAGE_PADDING}" y="${rowTop}" width="${WIDTH - PAGE_PADDING * 2}" height="${ASSET_ROW_HEIGHT}" fill="${index % 2 === 0 ? COLORS.panel : COLORS.rowAlt}"/>`,
+    text(COLUMN_BOUNDARIES[0] + 8, rowTop + 22, `#${row.rank}`, {
+      size: 12,
+      fill: COLORS.accent,
+      weight: 700
     }),
-    text(left + width - 18, y + 24, `${row.coverageCount}/5 venues`, {
-      size: 14, fill: COLORS.muted, anchor: 'end'
-    }),
-    text(columns[0]!, tableTop + 15, 'Venue', { size: 12, fill: COLORS.muted, weight: 600 }),
-    text(columns[1]!, tableTop + 15, 'Funding', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' }),
-    text(columns[2]!, tableTop + 15, 'Int.', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' }),
-    text(columns[3]!, tableTop + 15, 'APR', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' }),
-    text(columns[4]!, tableTop + 15, '7D / Day', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' }),
-    text(columns[5]!, tableTop + 15, '7D APR', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' })
+    text(COLUMN_CENTERS[0]!, rowTop + 45, compactAsset(row.asset), {
+      size: assetFontSize(row.asset),
+      weight: 700,
+      anchor: 'middle',
+      className: 'asset-symbol'
+    })
   ];
 
-  for (const [index, venue] of venues.entries()) {
-    const rowTop = tableTop + TABLE_HEADER_HEIGHT + index * VENUE_ROW_HEIGHT;
-    const baseline = rowTop + 16;
-    const cells = venueCells(row.venues[venue]);
-    if (index > 0) {
-      output.push(`<line x1="${left + 16}" y1="${rowTop}" x2="${left + width - 16}" y2="${rowTop}" stroke="${COLORS.border}" stroke-opacity="0.62"/>`);
-    }
-    output.push(
-      text(columns[0]!, baseline, VENUE_LABELS[venue], { size: 15, weight: 600 }),
-      text(columns[1]!, baseline, cells.nextFunding, { size: 15, fill: valueColor(cells.nextSign), anchor: 'end' }),
-      text(columns[2]!, baseline, cells.interval, { size: 15, fill: COLORS.muted, anchor: 'end' }),
-      text(columns[3]!, baseline, cells.nextApr, { size: 15, fill: valueColor(cells.nextSign), anchor: 'end' }),
-      text(columns[4]!, baseline, cells.historyDaily, { size: 15, fill: valueColor(cells.historySign), anchor: 'end' }),
-      text(columns[5]!, baseline, cells.historyApr, { size: 15, fill: valueColor(cells.historySign), anchor: 'end' })
-    );
+  for (const [venueIndex, venue] of VENUES.entries()) {
+    output.push(venueCell(row.venues[venue.id], COLUMN_CENTERS[venueIndex + 1]!, rowTop));
+  }
+  output.push(
+    summaryCell(
+      dailyValue,
+      summary.averageDailyRate?.comparedTo(0) ?? 0,
+      summary.venueCount,
+      COLUMN_CENTERS[6]!,
+      rowTop
+    ),
+    summaryCell(
+      aprValue,
+      summary.apr?.comparedTo(0) ?? 0,
+      summary.venueCount,
+      COLUMN_CENTERS[7]!,
+      rowTop
+    ),
+    `<line x1="${PAGE_PADDING}" y1="${rowTop + ASSET_ROW_HEIGHT}" x2="${WIDTH - PAGE_PADDING}" y2="${rowTop + ASSET_ROW_HEIGHT}" stroke="${COLORS.border}" stroke-opacity="0.75"/>`
+  );
+  return output.join('');
+}
+
+function tableHeader(): string {
+  const y = HEADER_HEIGHT;
+  const labels = ['Asset', ...VENUES.map(({ label }) => label), '7D / Day', '7D APR'];
+  const output = [
+    `<rect x="${PAGE_PADDING}" y="${y}" width="${WIDTH - PAGE_PADDING * 2}" height="${TABLE_HEADER_HEIGHT}" rx="10" fill="${COLORS.panelAlt}"/>`,
+    `<rect x="${PAGE_PADDING}" y="${y + 10}" width="${WIDTH - PAGE_PADDING * 2}" height="${TABLE_HEADER_HEIGHT - 10}" fill="${COLORS.panelAlt}"/>`
+  ];
+  for (const [index, label] of labels.entries()) {
+    output.push(text(COLUMN_CENTERS[index]!, y + 25, label, {
+      size: index >= 6 ? 11 : 12,
+      fill: COLORS.muted,
+      weight: 700,
+      anchor: 'middle'
+    }));
   }
   return output.join('');
 }
@@ -183,30 +228,35 @@ export function renderFundingReportSvg(
   end: number
 ): string {
   const rows = leaderboard.rows.slice(start, end);
-  if (rows.length !== 10) {
+  if (rows.length !== ROW_COUNT) {
     throw new Error(`Funding report image requires exactly 10 rows, received ${rows.length}`);
   }
-  const height = HEADER_HEIGHT
-    + rows.reduce((sum, row) => sum + assetHeight(row) + ASSET_GAP, 0)
-    + FOOTER_HEIGHT;
   const firstRank = rows[0]!.rank;
   const lastRank = rows.at(-1)!.rank;
-  let nextY = HEADER_HEIGHT;
-  const blocks = rows.map((row) => {
-    const block = assetBlock(row, nextY);
-    nextY += assetHeight(row) + ASSET_GAP;
-    return block;
-  });
+  const tableBottom = HEADER_HEIGHT + TABLE_HEADER_HEIGHT + ASSET_ROW_HEIGHT * ROW_COUNT;
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">`,
     `<rect width="100%" height="100%" fill="${COLORS.background}"/>`,
     '<style>text { font-family: Arial, "DejaVu Sans", sans-serif; }</style>',
-    text(PAGE_PADDING, 40, `5-Venue Funding Top20 · #${firstRank}–${lastRank}`, { size: 27, weight: 700 }),
-    text(PAGE_PADDING, 72, `Updated ${formatBeijingTime(leaderboard.asOf)} · Equal-weight available Next APR · min 2 venues`, {
-      size: 15, fill: COLORS.muted
+    text(PAGE_PADDING, 38, `5-Venue Funding Top20 · #${firstRank}–${lastRank}`, { size: 25, weight: 700 }),
+    text(PAGE_PADDING, 68, `Updated ${formatBeijingTime(leaderboard.asOf)} · ranked by equal-weight available Next APR`, {
+      size: 13,
+      fill: COLORS.muted
     }),
-    ...blocks,
-    text(PAGE_PADDING, height - 15, 'Positive Funding: longs pay shorts  ·  * history shorter than 7 days', { size: 13, fill: COLORS.muted }),
+    text(PAGE_PADDING, 91, '7D / Day and 7D APR: equal-weight valid venue histories · min 2 venues', {
+      size: 12,
+      fill: COLORS.muted
+    }),
+    `<rect x="${PAGE_PADDING}" y="${HEADER_HEIGHT}" width="${WIDTH - PAGE_PADDING * 2}" height="${TABLE_HEADER_HEIGHT + ASSET_ROW_HEIGHT * ROW_COUNT}" rx="10" fill="none" stroke="${COLORS.border}"/>`,
+    tableHeader(),
+    ...rows.map(assetRow),
+    ...COLUMN_BOUNDARIES.slice(1, -1).map((x) =>
+      `<line x1="${x}" y1="${HEADER_HEIGHT}" x2="${x}" y2="${tableBottom}" stroke="${COLORS.border}" stroke-opacity="0.82"/>`
+    ),
+    text(PAGE_PADDING, HEIGHT - 16, 'Positive Funding: longs pay shorts  ·  APR annualized  ·  * partial / insufficient 7D history', {
+      size: 11,
+      fill: COLORS.muted
+    }),
     '</svg>'
   ].join('');
 }
