@@ -51,7 +51,7 @@ function leaderboard(): CompositeFundingLeaderboard {
   };
 }
 
-test('renders an escaped ten-asset SVG as a fixed eight-column summary table', () => {
+test('renders an escaped ten-asset SVG as a fixed nine-column summary table', () => {
   const svg = renderFundingReportSvg(leaderboard(), 0, 10);
 
   assert.match(svg, /Funding Top20 · #1–10/);
@@ -59,6 +59,7 @@ test('renders an escaped ten-asset SVG as a fixed eight-column summary table', (
   assert.match(svg, /BTC&lt;&amp;/);
   assert.doesNotMatch(svg, /BTC<&/);
   assert.match(svg, />Asset</);
+  assert.match(svg, />Composite APR</);
   assert.match(svg, />Binance</);
   assert.match(svg, />OKX</);
   assert.match(svg, />Hyper</);
@@ -69,12 +70,14 @@ test('renders an escaped ten-asset SVG as a fixed eight-column summary table', (
   assert.match(svg, /\+0\.0100%/);
   assert.match(svg, /-0\.0200%/);
   assert.match(svg, /APR \+10\.95%/);
+  assert.match(svg, />\+12\.34%<\/text>/);
   assert.match(svg, /\+0\.0140%\*/);
   assert.match(svg, /\+5\.11%\*/);
   assert.match(svg, /#ff6b6b/);
   assert.match(svg, /#2ed6a1/);
   assert.match(svg, /width="800" height="826" viewBox="0 0 800 826"/);
   assert.equal((svg.match(/class="asset-symbol"/g) ?? []).length, 10);
+  assert.equal((svg.match(/class="composite-apr"/g) ?? []).length, 10);
 });
 
 test('renders exactly two non-empty PNG images for the two Top10 ranges', async () => {

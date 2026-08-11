@@ -36,7 +36,7 @@ const VENUES: Array<{ id: VenueId; label: string }> = [
   { id: 'bitget', label: 'Bitget' }
 ];
 
-const COLUMN_BOUNDARIES = [24, 116, 212, 308, 404, 500, 596, 686, 776] as const;
+const COLUMN_BOUNDARIES = [24, 110, 188, 272, 356, 440, 524, 608, 692, 776] as const;
 const COLUMN_CENTERS = COLUMN_BOUNDARIES.slice(0, -1).map(
   (left, index) => (left + COLUMN_BOUNDARIES[index + 1]!) / 2
 );
@@ -121,13 +121,13 @@ function venueCell(metric: CompositeVenueFundingMetric | undefined, x: number, r
   const sign = metric.nextFundingRate.comparedTo(0);
   return [
     text(x, rowTop + 27, signedFundingPercent(metric.nextFundingRate), {
-      size: 14,
+      size: 13,
       fill: valueColor(sign),
       weight: 600,
       anchor: 'middle'
     }),
     text(x, rowTop + 48, `APR ${signedAprPercent(metric.nextApr)}`, {
-      size: 11,
+      size: 10,
       fill: valueColor(metric.nextApr.comparedTo(0)),
       anchor: 'middle'
     })
@@ -149,6 +149,23 @@ function summaryCell(
       anchor: 'middle'
     }),
     text(x, rowTop + 48, venueCount > 0 ? `${venueCount} venues` : 'No history', {
+      size: 9,
+      fill: COLORS.muted,
+      anchor: 'middle'
+    })
+  ].join('');
+}
+
+function compositeCell(row: CompositeFundingRow, x: number, rowTop: number): string {
+  return [
+    text(x, rowTop + 29, signedAprPercent(row.compositeNextApr), {
+      size: 13,
+      fill: valueColor(row.compositeNextApr.comparedTo(0)),
+      weight: 700,
+      anchor: 'middle',
+      className: 'composite-apr'
+    }),
+    text(x, rowTop + 48, 'Next avg', {
       size: 9,
       fill: COLORS.muted,
       anchor: 'middle'
@@ -178,25 +195,26 @@ function assetRow(row: CompositeFundingRow, index: number): string {
       weight: 700,
       anchor: 'middle',
       className: 'asset-symbol'
-    })
+    }),
+    compositeCell(row, COLUMN_CENTERS[1]!, rowTop)
   ];
 
   for (const [venueIndex, venue] of VENUES.entries()) {
-    output.push(venueCell(row.venues[venue.id], COLUMN_CENTERS[venueIndex + 1]!, rowTop));
+    output.push(venueCell(row.venues[venue.id], COLUMN_CENTERS[venueIndex + 2]!, rowTop));
   }
   output.push(
     summaryCell(
       dailyValue,
       summary.averageDailyRate?.comparedTo(0) ?? 0,
       summary.venueCount,
-      COLUMN_CENTERS[6]!,
+      COLUMN_CENTERS[7]!,
       rowTop
     ),
     summaryCell(
       aprValue,
       summary.apr?.comparedTo(0) ?? 0,
       summary.venueCount,
-      COLUMN_CENTERS[7]!,
+      COLUMN_CENTERS[8]!,
       rowTop
     ),
     `<line x1="${PAGE_PADDING}" y1="${rowTop + ASSET_ROW_HEIGHT}" x2="${WIDTH - PAGE_PADDING}" y2="${rowTop + ASSET_ROW_HEIGHT}" stroke="${COLORS.border}" stroke-opacity="0.75"/>`
@@ -206,14 +224,14 @@ function assetRow(row: CompositeFundingRow, index: number): string {
 
 function tableHeader(): string {
   const y = HEADER_HEIGHT;
-  const labels = ['Asset', ...VENUES.map(({ label }) => label), '7D / Day', '7D APR'];
+  const labels = ['Asset', 'Composite APR', ...VENUES.map(({ label }) => label), '7D / Day', '7D APR'];
   const output = [
     `<rect x="${PAGE_PADDING}" y="${y}" width="${WIDTH - PAGE_PADDING * 2}" height="${TABLE_HEADER_HEIGHT}" rx="10" fill="${COLORS.panelAlt}"/>`,
     `<rect x="${PAGE_PADDING}" y="${y + 10}" width="${WIDTH - PAGE_PADDING * 2}" height="${TABLE_HEADER_HEIGHT - 10}" fill="${COLORS.panelAlt}"/>`
   ];
   for (const [index, label] of labels.entries()) {
     output.push(text(COLUMN_CENTERS[index]!, y + 25, label, {
-      size: index >= 6 ? 11 : 12,
+      size: index === 1 ? 10 : index >= 7 ? 11 : 12,
       fill: COLORS.muted,
       weight: 700,
       anchor: 'middle'

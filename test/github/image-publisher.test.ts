@@ -41,8 +41,8 @@ test('publishes both immutable paths to an existing branch and returns public ra
   const published = await publisher.publish(images, slot);
 
   assert.deepEqual(published, {
-    first: 'https://raw.githubusercontent.com/jordan584/bn-funding/funding-images/reports/2026/08/10/2026-08-10T16-top-1-10.png',
-    second: 'https://raw.githubusercontent.com/jordan584/bn-funding/funding-images/reports/2026/08/10/2026-08-10T16-top-11-20.png'
+    first: 'https://raw.githubusercontent.com/jordan584/bn-funding/funding-images/reports/2026/08/10/2026-08-10T16-top-1-10.png?v=53d0c513f46b',
+    second: 'https://raw.githubusercontent.com/jordan584/bn-funding/funding-images/reports/2026/08/10/2026-08-10T16-top-11-20.png?v=64d0262b4609'
   });
   assert.equal(requests.length, 5);
   assert.match(requests[0]!.url.pathname, /git\/ref\/heads\/funding-images$/);
@@ -53,6 +53,32 @@ test('publishes both immutable paths to an existing branch and returns public ra
   assert.equal(firstUpload.branch, 'funding-images');
   assert.equal(firstUpload.content, Buffer.from('first-png').toString('base64'));
   assert.equal('sha' in firstUpload, false);
+});
+
+test('changes the public URL version when image bytes change without changing the upload path', async () => {
+  const requests: SeenRequest[] = [];
+  const publisher = new GitHubImagePublisher({
+    token: 'github_pat_secret',
+    repository: 'jordan584/bn-funding',
+    branch: 'funding-images',
+    fetch: queuedFetch([
+      json({ ref: 'refs/heads/funding-images' }),
+      json({ message: 'Not Found' }, 404),
+      json({ content: { sha: 'one' } }, 201),
+      json({ message: 'Not Found' }, 404),
+      json({ content: { sha: 'two' } }, 201)
+    ], requests)
+  });
+
+  const published = await publisher.publish([
+    { range: '1-10', png: Buffer.from('changed-png') },
+    images[1]!
+  ], slot);
+
+  assert.match(published.first, /\.png\?v=837fd9adeda9$/);
+  assert.doesNotMatch(published.first, /53d0c513f46b/);
+  assert.equal(requests[1]!.url.searchParams.has('v'), false);
+  assert.equal(requests[1]!.url.pathname.endsWith('2026-08-10T16-top-1-10.png'), true);
 });
 
 test('creates a missing image branch from the default branch before uploading', async () => {

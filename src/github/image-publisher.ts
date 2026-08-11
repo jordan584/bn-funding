@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { ScheduledSlot } from '../domain.js';
 import type { FundingReportImage } from '../image/funding-report.js';
 
@@ -27,6 +29,10 @@ export class GitHubImagePublishError extends Error {
 
 function encodePath(value: string): string {
   return value.split('/').map(encodeURIComponent).join('/');
+}
+
+function contentVersion(png: Buffer): string {
+  return createHash('sha256').update(png).digest('hex').slice(0, 12);
 }
 
 function safeBranch(value: string): boolean {
@@ -82,8 +88,8 @@ export class GitHubImagePublisher {
       await this.upload(paths[index]!, image.png);
     }
     return {
-      first: this.rawUrl(paths[0]!),
-      second: this.rawUrl(paths[1]!)
+      first: this.rawUrl(paths[0]!, images[0]!.png),
+      second: this.rawUrl(paths[1]!, images[1]!.png)
     };
   }
 
@@ -95,8 +101,9 @@ export class GitHubImagePublisher {
     return `reports/${year}/${month}/${day}/${slot.key}-top-${range}.png`;
   }
 
-  private rawUrl(path: string): string {
-    return `${RAW_ORIGIN}/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/${encodePath(this.branch)}/${encodePath(path)}`;
+  private rawUrl(path: string, png: Buffer): string {
+    const rawUrl = `${RAW_ORIGIN}/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/${encodePath(this.branch)}/${encodePath(path)}`;
+    return `${rawUrl}?v=${contentVersion(png)}`;
   }
 
   private async ensureBranch(): Promise<void> {
