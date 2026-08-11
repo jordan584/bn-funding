@@ -68,6 +68,7 @@ test('renders an escaped ten-asset SVG with all five venue columns and signed co
   assert.match(svg, /#ff6b6b/);
   assert.match(svg, /#2ed6a1/);
   assert.match(svg, /\+9\.13%\*/);
+  assert.match(svg, /width="800" height="1892" viewBox="0 0 800 1892"/);
   assert.equal((svg.match(/class="asset-symbol"/g) ?? []).length, 10);
 });
 
@@ -79,7 +80,7 @@ test('renders exactly two non-empty PNG images for the two Top10 ranges', async 
     assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
     assert.ok(png.byteLength > 10_000);
     const metadata = await sharp(png).metadata();
-    assert.equal(metadata.width, 2880);
+    assert.equal(metadata.width, 1600);
   }
 });
 
@@ -100,9 +101,9 @@ test('omits venues without data and shrinks each asset panel to its coverage row
   assert.doesNotMatch(svg, />OKX</);
   assert.doesNotMatch(svg, />Hyper</);
   assert.doesNotMatch(svg, />Bitget</);
-  assert.match(svg, /height="1926" viewBox="0 0 1440 1926"/);
+  assert.match(svg, /width="800" height="1232" viewBox="0 0 800 1232"/);
 
   const images = await renderFundingReportImages(board);
   const metadata = await sharp(images[0]!.png).metadata();
-  assert.equal(metadata.height, 3852);
+  assert.equal(metadata.height, 2464);
 });

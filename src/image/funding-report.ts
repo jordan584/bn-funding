@@ -19,14 +19,14 @@ export interface FundingReportImage {
   png: Buffer;
 }
 
-const WIDTH = 1440;
-const PAGE_PADDING = 48;
-const HEADER_HEIGHT = 174;
-const ASSET_HEADER_HEIGHT = 50;
-const TABLE_HEADER_HEIGHT = 34;
-const VENUE_ROW_HEIGHT = 34;
-const ASSET_GAP = 16;
-const FOOTER_HEIGHT = 72;
+const WIDTH = 800;
+const PAGE_PADDING = 24;
+const HEADER_HEIGHT = 110;
+const ASSET_HEADER_HEIGHT = 36;
+const TABLE_HEADER_HEIGHT = 22;
+const VENUE_ROW_HEIGHT = 22;
+const ASSET_GAP = 6;
+const FOOTER_HEIGHT = 42;
 const VENUES: VenueId[] = ['binance', 'okx', 'hyperliquid', 'bybit', 'bitget'];
 
 const COLORS = {
@@ -134,44 +134,44 @@ function assetHeight(row: CompositeFundingRow): number {
 function assetBlock(row: CompositeFundingRow, y: number): string {
   const left = PAGE_PADDING;
   const width = WIDTH - PAGE_PADDING * 2;
-  const columns = [left + 28, left + 220, left + 535, left + 690, left + 900, left + 1170];
+  const columns = [36, 240, 326, 430, 594, 764];
   const tableTop = y + ASSET_HEADER_HEIGHT;
   const venues = presentVenues(row);
   const height = assetHeight(row);
   const output = [
-    `<rect x="${left}" y="${y}" width="${width}" height="${height}" rx="14" fill="${COLORS.panel}" stroke="${COLORS.border}"/>`,
+    `<rect x="${left}" y="${y}" width="${width}" height="${height}" rx="10" fill="${COLORS.panel}" stroke="${COLORS.border}" stroke-opacity="0.72"/>`,
     `<rect x="${left}" y="${tableTop}" width="${width}" height="${TABLE_HEADER_HEIGHT}" fill="${COLORS.panelAlt}"/>`,
-    text(left + 22, y + 33, `#${row.rank}`, { size: 24, fill: COLORS.accent, weight: 700 }),
-    text(left + 92, y + 33, row.asset, { size: 25, weight: 700, className: 'asset-symbol' }),
-    text(left + 400, y + 32, 'Composite Next APR', { size: 18, fill: COLORS.muted }),
-    text(left + 625, y + 33, signedAprPercent(row.compositeNextApr), {
-      size: 23, fill: valueColor(row.compositeNextApr.comparedTo(0)), weight: 700
+    text(left + 18, y + 25, `#${row.rank}`, { size: 18, fill: COLORS.accent, weight: 700 }),
+    text(left + 74, y + 25, row.asset, { size: 20, weight: 700, className: 'asset-symbol' }),
+    text(320, y + 24, 'Composite', { size: 14, fill: COLORS.muted }),
+    text(520, y + 25, signedAprPercent(row.compositeNextApr), {
+      size: 19, fill: valueColor(row.compositeNextApr.comparedTo(0)), weight: 700, anchor: 'end'
     }),
-    text(left + width - 22, y + 32, `Coverage ${row.coverageCount}/5`, {
-      size: 18, fill: COLORS.muted, anchor: 'end'
+    text(left + width - 18, y + 24, `${row.coverageCount}/5 venues`, {
+      size: 14, fill: COLORS.muted, anchor: 'end'
     }),
-    text(columns[0]!, tableTop + 23, 'Venue', { size: 16, fill: COLORS.muted, weight: 600 }),
-    text(columns[1]!, tableTop + 23, 'Next Funding', { size: 16, fill: COLORS.muted, weight: 600 }),
-    text(columns[2]!, tableTop + 23, 'Interval', { size: 16, fill: COLORS.muted, weight: 600 }),
-    text(columns[3]!, tableTop + 23, 'Next APR', { size: 16, fill: COLORS.muted, weight: 600 }),
-    text(columns[4]!, tableTop + 23, '7D Avg / Day', { size: 16, fill: COLORS.muted, weight: 600 }),
-    text(columns[5]!, tableTop + 23, '7D APR', { size: 16, fill: COLORS.muted, weight: 600 })
+    text(columns[0]!, tableTop + 15, 'Venue', { size: 12, fill: COLORS.muted, weight: 600 }),
+    text(columns[1]!, tableTop + 15, 'Funding', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' }),
+    text(columns[2]!, tableTop + 15, 'Int.', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' }),
+    text(columns[3]!, tableTop + 15, 'APR', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' }),
+    text(columns[4]!, tableTop + 15, '7D / Day', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' }),
+    text(columns[5]!, tableTop + 15, '7D APR', { size: 12, fill: COLORS.muted, weight: 600, anchor: 'end' })
   ];
 
   for (const [index, venue] of venues.entries()) {
     const rowTop = tableTop + TABLE_HEADER_HEIGHT + index * VENUE_ROW_HEIGHT;
-    const baseline = rowTop + 24;
+    const baseline = rowTop + 16;
     const cells = venueCells(row.venues[venue]);
     if (index > 0) {
-      output.push(`<line x1="${left + 20}" y1="${rowTop}" x2="${left + width - 20}" y2="${rowTop}" stroke="${COLORS.border}"/>`);
+      output.push(`<line x1="${left + 16}" y1="${rowTop}" x2="${left + width - 16}" y2="${rowTop}" stroke="${COLORS.border}" stroke-opacity="0.62"/>`);
     }
     output.push(
-      text(columns[0]!, baseline, VENUE_LABELS[venue], { size: 18, weight: 600 }),
-      text(columns[1]!, baseline, cells.nextFunding, { size: 18, fill: valueColor(cells.nextSign) }),
-      text(columns[2]!, baseline, cells.interval, { size: 18, fill: COLORS.muted }),
-      text(columns[3]!, baseline, cells.nextApr, { size: 18, fill: valueColor(cells.nextSign) }),
-      text(columns[4]!, baseline, cells.historyDaily, { size: 18, fill: valueColor(cells.historySign) }),
-      text(columns[5]!, baseline, cells.historyApr, { size: 18, fill: valueColor(cells.historySign) })
+      text(columns[0]!, baseline, VENUE_LABELS[venue], { size: 15, weight: 600 }),
+      text(columns[1]!, baseline, cells.nextFunding, { size: 15, fill: valueColor(cells.nextSign), anchor: 'end' }),
+      text(columns[2]!, baseline, cells.interval, { size: 15, fill: COLORS.muted, anchor: 'end' }),
+      text(columns[3]!, baseline, cells.nextApr, { size: 15, fill: valueColor(cells.nextSign), anchor: 'end' }),
+      text(columns[4]!, baseline, cells.historyDaily, { size: 15, fill: valueColor(cells.historySign), anchor: 'end' }),
+      text(columns[5]!, baseline, cells.historyApr, { size: 15, fill: valueColor(cells.historySign), anchor: 'end' })
     );
   }
   return output.join('');
@@ -201,11 +201,12 @@ export function renderFundingReportSvg(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}">`,
     `<rect width="100%" height="100%" fill="${COLORS.background}"/>`,
     '<style>text { font-family: Arial, "DejaVu Sans", sans-serif; }</style>',
-    text(PAGE_PADDING, 58, `5-Venue Funding Top20 · #${firstRank}–${lastRank}`, { size: 34, weight: 700 }),
-    text(PAGE_PADDING, 96, `Updated ${formatBeijingTime(leaderboard.asOf)}`, { size: 20, fill: COLORS.muted }),
-    text(PAGE_PADDING, 133, 'Ranked by equal-weight average of available Next Funding APR · minimum 2 venues', { size: 19, fill: COLORS.muted }),
+    text(PAGE_PADDING, 40, `5-Venue Funding Top20 · #${firstRank}–${lastRank}`, { size: 27, weight: 700 }),
+    text(PAGE_PADDING, 72, `Updated ${formatBeijingTime(leaderboard.asOf)} · Equal-weight available Next APR · min 2 venues`, {
+      size: 15, fill: COLORS.muted
+    }),
     ...blocks,
-    text(PAGE_PADDING, height - 32, 'Positive Funding: longs pay shorts  ·  * history shorter than 7 days', { size: 18, fill: COLORS.muted }),
+    text(PAGE_PADDING, height - 15, 'Positive Funding: longs pay shorts  ·  * history shorter than 7 days', { size: 13, fill: COLORS.muted }),
     '</svg>'
   ].join('');
 }
