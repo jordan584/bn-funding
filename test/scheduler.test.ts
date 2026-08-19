@@ -320,19 +320,18 @@ test('daemon reports a stop failure and exits unsuccessfully', async () => {
   assert.equal(exits[0], 1);
 });
 
-test('PM2 runs one restartable forked daemon in the Beijing timezone', () => {
+test('PM2 compatibility entry runs one send and exits without restarting', () => {
   const pm2 = require('../ecosystem.config.cjs') as {
     apps: Array<Record<string, unknown>>;
   };
 
   assert.deepEqual(pm2.apps, [{
     name: 'bn-funding',
-    script: 'dist/index.js',
+    script: 'dist/cli.js',
+    args: '--send',
     exec_mode: 'fork',
     instances: 1,
-    autorestart: true,
-    restart_delay: 5000,
-    max_restarts: 10,
+    autorestart: false,
     time: true,
     env: { NODE_ENV: 'production', TZ: 'Asia/Shanghai' }
   }]);

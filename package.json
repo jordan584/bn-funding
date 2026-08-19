@@ -12,6 +12,8 @@
     "test": "node --import tsx --test test/*.test.ts test/**/*.test.ts",
     "dry-run": "node dist/cli.js --dry-run",
     "push:once": "node dist/cli.js --send",
+    "schedule:install": "npm run build && node scripts/install-cron.cjs --install",
+    "schedule:remove": "node scripts/install-cron.cjs --remove",
     "dry-run:dev": "tsx src/cli.ts --dry-run",
     "push:once:dev": "tsx src/cli.ts --send",
     "start": "node dist/index.js"

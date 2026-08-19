@@ -10,4 +10,5 @@ data/*.tmp
 /state.json.corrupt-*
 /state.json.lock/
 coverage/
+cron.log
 .worktrees/
