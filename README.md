@@ -1,17 +1,24 @@
-# Five-Venue Funding Monitor
+# Five-Venue Stock Funding Monitor
 
-This service ranks assets by the equal-weight average of estimated next-Funding
-APR across Binance, OKX, Hyperliquid, Bybit, and Bitget. An asset must be listed
-on at least two of those approved venues to qualify. Each run generates two
-mobile-readable Top10 PNG tables, publishes them to this repository's public
-image branch, and posts both images in one Google Chat message. The service runs
-in the `Asia/Shanghai` timezone.
+This service ranks stock perpetuals by the absolute value of the equal-weight
+average estimated next-Funding APR across Binance, OKX, Hyperliquid, Bybit, and
+Bitget. The signed Composite APR remains visible so positive and negative
+Funding extremes are distinguishable. The live
+Binance `type=3` bStocks list defines the canonical stock ticker universe. Each
+venue must also classify the matching contract as a stock/RWA market: Binance
+`TRADIFI_PERPETUAL`, OKX `instCategory=3`, Hyperliquid's `xyz` HIP-3 DEX, Bybit
+`symbolType=stock`, or Bitget `isRwa=YES`. This prevents a same-ticker crypto
+contract from being treated as a stock. A stock must be listed on at least two
+approved venues to qualify. Each run generates two mobile-readable Top10 PNG
+tables, publishes them to this repository's public image branch, and posts both
+images in one Google Chat message. The service runs in the `Asia/Shanghai`
+timezone.
 
 ## Prerequisites
 
 - Node.js **24 LTS** (the service does not support Node.js 20 or earlier).
-- No venue API key is needed; all five market-data integrations use public
-  endpoints.
+- No venue API key is needed; the bStocks universe and all five market-data
+  integrations use public endpoints.
 - Ubuntu `cron`/`crontab` available for the operating-system user that will run
   the monitor.
 - A Google Chat incoming Webhook for the destination space. Treat its URL as a
@@ -94,9 +101,9 @@ Before connecting Chat, verify all five live public-data paths after a build:
 npm run dry-run
 ```
 
-The structured completion log should report market/current/request/page/retry
-counts and current-stage duration for each of `binance`, `okx`,
-`hyperliquid`, `bybit`, and `bitget`. It also reports normalization and alias
+The structured completion log should report the bStocks universe count plus
+market/current/request/page/retry counts and current-stage duration for each of
+`binance`, `okx`, `hyperliquid`, `bybit`, and `bitget`. It also reports normalization and alias
 counts, candidate coverage counts, sanitized Top20 APR/missing-reason data,
 selected-history records/coverage/duration, payload bytes, push result, and
 slot state. The output must contain exactly 20 ranked assets with five venue
@@ -123,9 +130,11 @@ unset GOOGLE_CHAT_WEBHOOK_URL
 ```
 
 Confirm exactly one Google Chat message arrives with two Top10 images. The rank
-must be the equal-weight average of estimated next-Funding APR across the five
-approved venues, using only assets covered by at least two venues. On both
-desktop and mobile, verify all 20 assets are visible and every asset shows all
+must use the descending absolute value of the equal-weight average estimated
+next-Funding APR across the five approved venues, using only bStocks tickers
+covered by at least two venues. The displayed Composite APR must retain its
+original sign. On
+both desktop and mobile, verify all 20 assets are visible and every asset shows all
 five venue positions. A listed position shows estimated next Funding, its
 period and APR, plus the realized seven-day daily average and APR. The exact
 missing-data forms are distinct:
@@ -143,6 +152,14 @@ Remove the test Webhook from the secret manager or the server environment
 after validation; it must not remain in shell history or a tracked file.
 
 ## Recovery
+
+### bStocks universe failure
+
+The run fails closed when Binance's public bStocks list is unavailable,
+malformed, duplicated, or contains fewer than 20 tickers. No history, image, or
+Chat delivery is attempted with an uncertain stock universe. Retry after the
+public endpoint recovers; no additional environment variable or API key is
+required.
 
 ### Venue public-data failure
 

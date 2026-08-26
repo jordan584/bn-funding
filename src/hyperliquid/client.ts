@@ -31,15 +31,21 @@ export interface HyperliquidClientOptions {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   random?: () => number;
+  dex?: string;
 }
 
 export class HyperliquidClient implements FundingVenueAdapter {
   readonly id = 'hyperliquid' as const;
   private readonly http: PublicJsonClient;
   private readonly now: () => number;
+  private readonly dex: string;
 
   constructor(options: HyperliquidClientOptions) {
     this.now = options.now ?? Date.now;
+    this.dex = options.dex?.trim() ?? '';
+    if (this.dex !== '' && !/^[a-z0-9]{2,6}$/u.test(this.dex)) {
+      throw new Error('Invalid Hyperliquid perp DEX name');
+    }
     const httpOptions: PublicJsonClientOptions = {
       venue: this.id,
       baseUrl: options.baseUrl,
@@ -63,7 +69,10 @@ export class HyperliquidClient implements FundingVenueAdapter {
       hyperMetaAndContextsSchema,
       await this.http.postJson(
         '/info',
-        { type: 'metaAndAssetCtxs' },
+        {
+          type: 'metaAndAssetCtxs',
+          ...(this.dex === '' ? {} : { dex: this.dex })
+        },
         requestTelemetryContext('current', onRequestTelemetry)
       ),
       'Hyperliquid response validation failed'
@@ -77,7 +86,8 @@ export class HyperliquidClient implements FundingVenueAdapter {
     for (let index = 0; index < metadata.universe.length; index += 1) {
       const asset = metadata.universe[index]!;
       const context = contexts[index]!;
-      if (asset.name.trim() === '') {
+      const rawBaseAsset = this.baseAsset(asset.name);
+      if (rawBaseAsset === '') {
         throw new VenueRequestError(this.id, 'Invalid Hyperliquid asset name');
       }
       if (seenAssets.has(asset.name)) {
@@ -89,7 +99,7 @@ export class HyperliquidClient implements FundingVenueAdapter {
       markets.push({
         venue: this.id,
         marketId: asset.name,
-        rawBaseAsset: asset.name,
+        rawBaseAsset,
         quoteAsset: 'USD',
         settleAsset: 'USDC',
         nextFundingRate: context.funding,
@@ -182,6 +192,13 @@ export class HyperliquidClient implements FundingVenueAdapter {
       throw new VenueRequestError(this.id, message);
     }
     return result.data;
+  }
+
+  private baseAsset(marketId: string): string {
+    const name = marketId.trim();
+    if (this.dex === '') return name;
+    const prefix = `${this.dex}:`;
+    return name.startsWith(prefix) ? name.slice(prefix.length) : '';
   }
 }
 

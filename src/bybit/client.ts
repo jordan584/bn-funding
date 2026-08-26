@@ -30,6 +30,7 @@ export interface BybitClientOptions {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   random?: () => number;
+  stocksOnly?: boolean;
 }
 
 const MAX_HISTORY_RECORDS = 200;
@@ -38,9 +39,11 @@ export class BybitClient implements FundingVenueAdapter {
   readonly id = 'bybit' as const;
   private readonly http: PublicJsonClient;
   private readonly now: () => number;
+  private readonly stocksOnly: boolean;
 
   constructor(options: BybitClientOptions) {
     this.now = options.now ?? Date.now;
+    this.stocksOnly = options.stocksOnly ?? false;
     const httpOptions: PublicJsonClientOptions = {
       venue: this.id,
       baseUrl: options.baseUrl,
@@ -66,9 +69,15 @@ export class BybitClient implements FundingVenueAdapter {
       instrument.contractType === 'LinearPerpetual'
       && instrument.status === 'Trading'
       && instrument.settleCoin === 'USDT'
+      && (!this.stocksOnly || instrument.symbolType === 'stock')
     ));
     if (eligibleInstruments.length === 0) {
-      throw new VenueRequestError(this.id, 'No eligible Bybit USDT linear perpetuals');
+      throw new VenueRequestError(
+        this.id,
+        this.stocksOnly
+          ? 'No eligible Bybit stock USDT linear perpetuals'
+          : 'No eligible Bybit USDT linear perpetuals'
+      );
     }
 
     const eligibleBySymbol = new Map<string, typeof eligibleInstruments[number]>();

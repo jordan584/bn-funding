@@ -21,7 +21,7 @@ const envelope = (result: unknown, retCode = 0) => ({
 const instrument = (
   symbol: string,
   overrides: Partial<Record<
-    'baseCoin' | 'contractType' | 'fundingInterval' | 'launchTime' | 'quoteCoin' | 'settleCoin' | 'status',
+    'baseCoin' | 'contractType' | 'fundingInterval' | 'launchTime' | 'quoteCoin' | 'settleCoin' | 'status' | 'symbolType',
     string | number
   >> = {}
 ) => ({
@@ -34,6 +34,26 @@ const instrument = (
   launchTime: String(AS_OF - DAY),
   fundingInterval: 480,
   ...overrides
+});
+
+test('stock mode keeps only Bybit instruments tagged as stock', async () => {
+  const client = new BybitClient({
+    baseUrl,
+    stocksOnly: true,
+    fetch: queuedFetch([
+      jsonResponse(envelope({ list: [
+        instrument('NVDAUSDT', { symbolType: 'stock' }),
+        instrument('QNTUSDT', { symbolType: '' })
+      ], nextPageCursor: '' })),
+      jsonResponse(envelope({ category: 'linear', list: [ticker('NVDAUSDT')] }))
+    ], []),
+    now: () => AS_OF,
+    sleep: async () => {}
+  });
+
+  const snapshot = await client.getCurrentSnapshot();
+
+  assert.deepEqual(snapshot.markets.map(({ marketId }) => marketId), ['NVDAUSDT']);
 });
 
 const ticker = (

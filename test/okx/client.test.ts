@@ -19,7 +19,7 @@ const history = (fundingTime: number, realizedRate = '0.0001', instId = 'BTC-USD
 });
 const swap = (
   instId: string,
-  overrides: Partial<Record<'baseCcy' | 'ctType' | 'instFamily' | 'instType' | 'listTime' | 'quoteCcy' | 'settleCcy' | 'state', string>> = {}
+  overrides: Partial<Record<'baseCcy' | 'ctType' | 'instCategory' | 'instFamily' | 'instType' | 'listTime' | 'quoteCcy' | 'settleCcy' | 'state', string>> = {}
 ) => {
   const match = /^([A-Z0-9]+)-([A-Z0-9]+)-SWAP$/.exec(instId);
   if (match === null) throw new Error(`Invalid test instrument ${instId}`);
@@ -63,6 +63,28 @@ test('keeps protocol-shaped live linear USDT swaps and derives the actual curren
     nextFundingRate: '0.0003', intervalHours: 4, nextFundingTime: AS_OF + 2 * HOUR, listedAt: AS_OF - DAY
   }]);
   assert.deepEqual(snapshot.stats, { marketCount: 1, requestCount: 2, pageCount: 0 });
+});
+
+test('stock mode keeps only OKX instCategory 3 swaps', async () => {
+  const client = new OkxClient({
+    baseUrl,
+    stocksOnly: true,
+    fetch: queuedFetch([
+      jsonResponse(envelope([
+        swap('NVDA-USDT-SWAP', { instCategory: '3' }),
+        swap('BTC-USDT-SWAP', { instCategory: '1' })
+      ])),
+      jsonResponse(envelope([{
+        instId: 'NVDA-USDT-SWAP', fundingRate: '0.0003', fundingTime: String(AS_OF + 2 * HOUR), nextFundingTime: String(AS_OF + 6 * HOUR)
+      }]))
+    ], []),
+    now: () => AS_OF,
+    sleep: async () => {}
+  });
+
+  const snapshot = await client.getCurrentSnapshot();
+
+  assert.deepEqual(snapshot.markets.map(({ marketId }) => marketId), ['NVDA-USDT-SWAP']);
 });
 
 test('rejects a non-zero OKX business code from an HTTP-success response', async () => {

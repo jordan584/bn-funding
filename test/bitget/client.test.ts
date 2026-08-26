@@ -20,7 +20,7 @@ const envelope = (data: unknown, code = '00000') => ({
 
 const contract = (
   symbol: string,
-  overrides: Partial<Record<'baseCoin' | 'launchTime' | 'quoteCoin' | 'symbolStatus' | 'symbolType', string>> = {}
+  overrides: Partial<Record<'baseCoin' | 'isRwa' | 'launchTime' | 'quoteCoin' | 'symbolStatus' | 'symbolType', string>> = {}
 ) => ({
   symbol,
   baseCoin: symbol.replace(/USDT$/, ''),
@@ -29,6 +29,26 @@ const contract = (
   symbolType: 'perpetual',
   launchTime: String(AS_OF - DAY),
   ...overrides
+});
+
+test('stock mode keeps only Bitget RWA perpetuals', async () => {
+  const client = new BitgetClient({
+    baseUrl,
+    stocksOnly: true,
+    fetch: queuedFetch([
+      jsonResponse(envelope([
+        contract('NVDAUSDT', { isRwa: 'YES' }),
+        contract('QNTUSDT', { isRwa: 'NO' })
+      ])),
+      jsonResponse(envelope([current('NVDAUSDT')]))
+    ], []),
+    now: () => AS_OF,
+    sleep: async () => {}
+  });
+
+  const snapshot = await client.getCurrentSnapshot();
+
+  assert.deepEqual(snapshot.markets.map(({ marketId }) => marketId), ['NVDAUSDT']);
 });
 
 const current = (

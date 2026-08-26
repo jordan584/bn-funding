@@ -13,7 +13,8 @@ export const bitgetContractSchema = z.object({
   quoteCoin: z.string(),
   symbolStatus: z.string(),
   symbolType: z.string(),
-  launchTime: z.string()
+  launchTime: z.string(),
+  isRwa: z.string().optional().default('NO')
 });
 
 export const bitgetCurrentFundingSchema = z.object({

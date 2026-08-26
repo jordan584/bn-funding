@@ -28,6 +28,7 @@ test('daemon configuration is production-safe', () => {
     bybit: 'https://api.bybit.com',
     bitget: 'https://api.bitget.com'
   });
+  assert.equal(config.bStocksBaseUrl.origin, 'https://www.binance.com');
   assert.equal(config.exchangeTimeoutMs, 10_000);
   assert.equal(config.chatTimeoutMs, 15_000);
   assert.equal(config.catchUpWindowMs, 30 * 60_000);

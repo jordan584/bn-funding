@@ -19,6 +19,7 @@ const MAX_SNAPSHOT_AGE_MS = 30 * MINUTE_MS;
 export interface BuildCompositeFundingLeaderboardInput {
   asOf: number;
   snapshots: VenueSnapshot[];
+  allowedAssets?: ReadonlySet<string>;
   onTelemetry?: (telemetry: CompositeBuildTelemetry) => void;
 }
 
@@ -184,7 +185,7 @@ function compareAssetIds(left: string, right: string): number {
 }
 
 function compareRows(left: CompositeFundingRow, right: CompositeFundingRow): number {
-  const aprComparison = right.compositeNextApr.comparedTo(left.compositeNextApr);
+  const aprComparison = right.compositeNextApr.abs().comparedTo(left.compositeNextApr.abs());
   if (aprComparison !== 0) {
     return aprComparison;
   }
@@ -232,6 +233,9 @@ export function buildCompositeFundingLeaderboard(
       }
       const normalized = normalizedAsset(market, venue);
       const asset = normalized.asset;
+      if (input.allowedAssets !== undefined && !input.allowedAssets.has(asset)) {
+        continue;
+      }
       if (normalized.explicitAlias) telemetry.normalization.explicitAliasCount += 1;
       if (assetsInVenue.has(asset)) {
         telemetry.normalization.conflictCount += 1;

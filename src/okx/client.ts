@@ -37,6 +37,7 @@ export interface OkxClientOptions {
   random?: () => number;
   currentConcurrency?: number;
   historyPageLimit?: number;
+  stocksOnly?: boolean;
 }
 
 export class OkxClient implements FundingVenueAdapter {
@@ -45,11 +46,13 @@ export class OkxClient implements FundingVenueAdapter {
   private readonly now: () => number;
   private readonly currentConcurrency: number;
   private readonly historyPageLimit: number;
+  private readonly stocksOnly: boolean;
 
   constructor(options: OkxClientOptions) {
     this.now = options.now ?? Date.now;
     this.currentConcurrency = options.currentConcurrency ?? DEFAULT_CURRENT_CONCURRENCY;
     this.historyPageLimit = normalizeHistoryPageLimit(options.historyPageLimit);
+    this.stocksOnly = options.stocksOnly ?? false;
 
     const httpOptions: PublicJsonClientOptions = {
       venue: this.id,
@@ -76,9 +79,15 @@ export class OkxClient implements FundingVenueAdapter {
       && instrument.state === 'live'
       && instrument.settleCcy === 'USDT'
       && instrument.ctType === 'linear'
+      && (!this.stocksOnly || instrument.instCategory === '3')
     ));
     if (eligibleInstruments.length === 0) {
-      throw new VenueRequestError(this.id, 'No eligible OKX USDT linear swaps');
+      throw new VenueRequestError(
+        this.id,
+        this.stocksOnly
+          ? 'No eligible OKX stock USDT linear swaps'
+          : 'No eligible OKX USDT linear swaps'
+      );
     }
     const seenInstrumentIds = new Set<string>();
     const assetsByInstrumentId = new Map<string, { rawBaseAsset: string; quoteAsset: string }>();

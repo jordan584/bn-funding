@@ -15,7 +15,8 @@ export const okxInstrumentSchema = z.object({
   ctType: z.string(),
   state: z.string(),
   listTime: z.string(),
-  instFamily: z.string()
+  instFamily: z.string(),
+  instCategory: z.string().optional().default('')
 });
 
 export const okxCurrentFundingSchema = z.object({

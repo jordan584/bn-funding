@@ -54,7 +54,7 @@ export function renderCompositeRowText(row: CompositeFundingRow): string {
 
 export function renderLeaderboardText(leaderboard: CompositeFundingLeaderboard): string {
   const lines = [
-    `五交易所 Funding Top20（截至 ${leaderboard.asOf}）`,
+    `五交易所股票 Funding Top20（截至 ${leaderboard.asOf}）`,
     ...leaderboard.rows.map(renderCompositeRowText)
   ];
   if (leaderboard.rows.some((row) => Object.values(row.venues).some((metric) => metric?.partialSevenDayHistory))) {

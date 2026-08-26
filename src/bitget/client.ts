@@ -32,15 +32,18 @@ export interface BitgetClientOptions {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   random?: () => number;
+  stocksOnly?: boolean;
 }
 
 export class BitgetClient implements FundingVenueAdapter {
   readonly id = 'bitget' as const;
   private readonly http: PublicJsonClient;
   private readonly now: () => number;
+  private readonly stocksOnly: boolean;
 
   constructor(options: BitgetClientOptions) {
     this.now = options.now ?? Date.now;
+    this.stocksOnly = options.stocksOnly ?? false;
     const httpOptions: PublicJsonClientOptions = {
       venue: this.id,
       baseUrl: options.baseUrl,
@@ -73,9 +76,15 @@ export class BitgetClient implements FundingVenueAdapter {
       contract.symbolStatus === 'normal'
       && contract.quoteCoin === 'USDT'
       && contract.symbolType === 'perpetual'
+      && (!this.stocksOnly || contract.isRwa === 'YES')
     ));
     if (eligibleContracts.length === 0) {
-      throw new VenueRequestError(this.id, 'No eligible Bitget USDT futures contracts');
+      throw new VenueRequestError(
+        this.id,
+        this.stocksOnly
+          ? 'No eligible Bitget stock USDT perpetuals'
+          : 'No eligible Bitget USDT futures contracts'
+      );
     }
 
     const contractBySymbol = new Map<string, typeof eligibleContracts[number]>();

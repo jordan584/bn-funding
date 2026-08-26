@@ -86,7 +86,7 @@ test('builds exactly two Top10 cards with five venue blocks and the prescribed C
   const message = buildFundingChatMessage(leaderboard(rows()));
   const blocks = assetHtml(message);
 
-  assert.equal(message.text, '五交易所 Funding Top20（截至 1700000000000）');
+  assert.equal(message.text, '五交易所股票 Funding Top20（截至 1700000000000）');
   assert.deepEqual(message.cardsV2.map(({ cardId }) => cardId), ['funding-top20-1-10', 'funding-top20-11-20']);
   assert.deepEqual(blocks.map((block) => Number(block.match(/#(\d+)/)?.[1])), Array.from({ length: 20 }, (_, index) => index + 1));
   for (const block of blocks) {
@@ -95,7 +95,7 @@ test('builds exactly two Top10 cards with five venue blocks and the prescribed C
     assert.ok(block.indexOf('Hyper 下次') < block.indexOf('Bybit 下次'));
     assert.ok(block.indexOf('Bybit 下次') < block.indexOf('Bitget 下次'));
   }
-  assert.match(JSON.stringify(message.cardsV2[0]!.card), /按有效平台的下一次 Funding APR 等权平均排序。/);
+  assert.match(JSON.stringify(message.cardsV2[0]!.card), /按有效平台的下一次 Funding APR 等权平均的绝对值降序。/);
   assert.match(JSON.stringify(message.cardsV2[0]!.card), /下一次为当前预估；括号内为 APR。/);
 });
 

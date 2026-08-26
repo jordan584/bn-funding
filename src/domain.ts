@@ -5,6 +5,7 @@ export type TriggerSource = 'cron' | 'startup-catchup' | 'manual';
 
 export interface AppConfig {
   exchangeBaseUrls: Record<VenueId, URL>;
+  bStocksBaseUrl: URL;
   googleChatWebhookUrl?: URL;
   stateFile: string;
   timezone: 'Asia/Shanghai';
@@ -26,6 +27,10 @@ export interface ExchangeSymbol {
   contractType: string;
   status: string;
   onboardDate: number;
+}
+
+export interface StockUniverseProvider {
+  getStockTickers(): Promise<string[]>;
 }
 
 export interface FundingHistoryRecord {

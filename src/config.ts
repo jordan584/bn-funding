@@ -57,6 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv, mode: RunMode): AppConfig {
       bybit: new URL('https://api.bybit.com'),
       bitget: new URL('https://api.bitget.com')
     },
+    bStocksBaseUrl: new URL('https://www.binance.com'),
     ...(webhookValue ? { googleChatWebhookUrl: parseGoogleChatWebhook(webhookValue) } : {}),
     ...(githubToken ? {
       github: {

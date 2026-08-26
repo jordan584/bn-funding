@@ -256,12 +256,12 @@ export function renderFundingReportSvg(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">`,
     `<rect width="100%" height="100%" fill="${COLORS.background}"/>`,
     '<style>text { font-family: Arial, "DejaVu Sans", sans-serif; }</style>',
-    text(PAGE_PADDING, 38, `5-Venue Funding Top20 · #${firstRank}–${lastRank}`, { size: 25, weight: 700 }),
-    text(PAGE_PADDING, 68, `Updated ${formatBeijingTime(leaderboard.asOf)} · ranked by equal-weight available Next APR`, {
+    text(PAGE_PADDING, 38, `5-Venue Stock Funding Top20 · #${firstRank}–${lastRank}`, { size: 25, weight: 700 }),
+    text(PAGE_PADDING, 68, `Updated ${formatBeijingTime(leaderboard.asOf)} · ranked by absolute equal-weight Next APR`, {
       size: 13,
       fill: COLORS.muted
     }),
-    text(PAGE_PADDING, 91, '7D / Day and 7D APR: equal-weight valid venue histories · min 2 venues', {
+    text(PAGE_PADDING, 91, 'Universe: Binance bStocks · 7D metrics: equal-weight valid venue histories · min 2 venues', {
       size: 12,
       fill: COLORS.muted
     }),

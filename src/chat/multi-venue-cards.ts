@@ -64,7 +64,7 @@ function rowHtml(row: CompositeFundingRow): string {
 
 function buildCard(rows: CompositeFundingRow[], title: string, asOf: number): Record<string, unknown> {
   const widgets: Array<Record<string, unknown>> = [
-    { textParagraph: { text: '按有效平台的下一次 Funding APR 等权平均排序。' } }
+    { textParagraph: { text: '按有效平台的下一次 Funding APR 等权平均的绝对值降序。' } }
   ];
   for (const [index, row] of rows.entries()) {
     widgets.push({ textParagraph: { text: rowHtml(row) } });
@@ -83,15 +83,15 @@ function buildCard(rows: CompositeFundingRow[], title: string, asOf: number): Re
 
 export function buildFundingChatMessage(leaderboard: CompositeFundingLeaderboard): GoogleChatMessage {
   const message: GoogleChatMessage = {
-    text: `五交易所 Funding Top20（截至 ${leaderboard.asOf}）`,
+    text: `五交易所股票 Funding Top20（截至 ${leaderboard.asOf}）`,
     cardsV2: [
       {
         cardId: 'funding-top20-1-10',
-        card: buildCard(leaderboard.rows.slice(0, 10), '五交易所 Funding Top20 · #1–10', leaderboard.asOf)
+        card: buildCard(leaderboard.rows.slice(0, 10), '五交易所股票 Funding Top20 · #1–10', leaderboard.asOf)
       },
       {
         cardId: 'funding-top20-11-20',
-        card: buildCard(leaderboard.rows.slice(10, 20), '五交易所 Funding Top20 · #11–20', leaderboard.asOf)
+        card: buildCard(leaderboard.rows.slice(10, 20), '五交易所股票 Funding Top20 · #11–20', leaderboard.asOf)
       }
     ]
   };

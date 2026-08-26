@@ -61,6 +61,26 @@ test('defaults an eligible Binance market without an interval override to eight 
   assert.equal(snapshot.markets[0]?.intervalHours, 8);
 });
 
+test('stock mode keeps TradFi perpetuals and excludes same-ticker crypto perpetuals', async () => {
+  const adapter = new BinanceVenueAdapter({
+    baseUrl,
+    stocksOnly: true,
+    fetch: queuedFetch([
+      jsonResponse({ serverTime: AS_OF }),
+      jsonResponse({ symbols: [
+        { symbol: 'NVDAUSDT', baseAsset: 'NVDA', quoteAsset: 'USDT', contractType: 'TRADIFI_PERPETUAL', status: 'TRADING', onboardDate: AS_OF - DAY },
+        { symbol: 'QNTUSDT', baseAsset: 'QNT', quoteAsset: 'USDT', contractType: 'PERPETUAL', status: 'TRADING', onboardDate: AS_OF - DAY }
+      ] }),
+      jsonResponse([{ symbol: 'NVDAUSDT', lastFundingRate: '0.0001', nextFundingTime: AS_OF + 8 * HOUR }]),
+      jsonResponse([])
+    ], [])
+  });
+
+  const snapshot = await adapter.getCurrentSnapshot();
+
+  assert.deepEqual(snapshot.markets.map(({ marketId }) => marketId), ['NVDAUSDT']);
+});
+
 test('carries Unicode letter assets from the Binance adapter through deterministic composite ranking', async () => {
   const unicodeAssets = ['币安人生', '币安日记', 'Ａ', '𐐀'];
   const sharedAssets = [

@@ -15,7 +15,8 @@ export const bybitInstrumentSchema = z.object({
   quoteCoin: z.string(),
   settleCoin: z.string(),
   launchTime: z.string(),
-  fundingInterval: z.number().finite()
+  fundingInterval: z.number().finite(),
+  symbolType: z.string().optional().default('')
 });
 
 export const bybitTickerSchema = z.object({

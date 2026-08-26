@@ -35,10 +35,10 @@ export function buildFundingImageChatMessage(
   images: PublishedFundingImages
 ): GoogleChatMessage {
   return {
-    text: `五交易所 Funding Top20（截至 ${asOf}）`,
+    text: `五交易所股票 Funding Top20（截至 ${asOf}）`,
     cardsV2: [
-      imageCard('funding-image-1-10', '五交易所 Funding Top20 · #1–10', images.first),
-      imageCard('funding-image-11-20', '五交易所 Funding Top20 · #11–20', images.second)
+      imageCard('funding-image-1-10', '五交易所股票 Funding Top20 · #1–10', images.first),
+      imageCard('funding-image-11-20', '五交易所股票 Funding Top20 · #11–20', images.second)
     ]
   };
 }

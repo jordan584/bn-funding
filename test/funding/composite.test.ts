@@ -106,6 +106,26 @@ test('excludes one-venue assets and does not use missing venues as zero APR', ()
   assert.equal(twoVenue?.compositeNextApr.toString(), '0.876');
 });
 
+test('restricts candidates to the live bStocks ticker universe before ranking', () => {
+  const snapshots = completeSnapshots({
+    binance: [venueMarket('binance', 'CRYPTO', '0.9')],
+    okx: [venueMarket('okx', 'CRYPTO', '0.9')]
+  });
+  addTwoVenueCandidates(snapshots, 20, 'STOCK');
+  const allowedAssets = new Set(
+    Array.from({ length: 20 }, (_, index) => `STOCK${index + 1}`)
+  );
+
+  const leaderboard = buildCompositeFundingLeaderboard({
+    asOf: AS_OF,
+    snapshots,
+    allowedAssets
+  });
+
+  assert.equal(leaderboard.rows.some(({ asset }) => asset === 'CRYPTO'), false);
+  assert.equal(leaderboard.rows.every(({ asset }) => allowedAssets.has(asset)), true);
+});
+
 test('rejects duplicate normalized assets from the same venue', () => {
   const snapshots = completeSnapshots({
     binance: [venueMarket('binance', 'PEPE'), venueMarket('binance', '1000PEPE')]
@@ -237,7 +257,7 @@ test('requires at least twenty assets covered by two venues', () => {
   );
 });
 
-test('orders by signed composite APR, coverage, then asset and retains negatives', () => {
+test('orders by absolute composite APR, coverage, then asset and retains signs', () => {
   const snapshots = completeSnapshots({
     binance: [
       venueMarket('binance', 'BETA', '0.0001'),
@@ -260,8 +280,15 @@ test('orders by signed composite APR, coverage, then asset and retains negatives
 
   const leaderboard = buildCompositeFundingLeaderboard({ asOf: AS_OF, snapshots });
 
-  assert.deepEqual(leaderboard.rows.slice(0, 3).map((row) => row.asset), ['BETA', 'ALPHA', 'GAMMA']);
-  assert.deepEqual(leaderboard.rows.slice(-2).map((row) => row.asset), ['NEGATIVEA', 'NEGATIVEB']);
+  assert.deepEqual(leaderboard.rows.slice(0, 5).map((row) => row.asset), [
+    'NEGATIVEB',
+    'BETA',
+    'ALPHA',
+    'GAMMA',
+    'NEGATIVEA'
+  ]);
+  assert.equal(leaderboard.rows[0]!.compositeNextApr.isNegative(), true);
+  assert.equal(leaderboard.rows[4]!.compositeNextApr.isNegative(), true);
 });
 
 test('keeps candidate count while slicing the sorted best twenty candidates', () => {

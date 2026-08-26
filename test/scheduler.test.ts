@@ -52,13 +52,14 @@ class FakeCron implements CronAdapter {
 
 function config(): AppConfig {
   return {
-    exchangeBaseUrls: {
+  exchangeBaseUrls: {
       binance: new URL('https://fapi.binance.com'),
       okx: new URL('https://www.okx.com'),
       hyperliquid: new URL('https://api.hyperliquid.xyz'),
       bybit: new URL('https://api.bybit.com'),
-      bitget: new URL('https://api.bitget.com')
-    },
+    bitget: new URL('https://api.bitget.com')
+  },
+  bStocksBaseUrl: new URL('https://www.binance.com'),
     googleChatWebhookUrl: new URL('https://chat.googleapis.com/v1/spaces/example/messages?key=k&token=t'),
     stateFile: '/tmp/bn-funding-scheduler-test.json',
     timezone: 'Asia/Shanghai',

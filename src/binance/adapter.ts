@@ -9,12 +9,18 @@ import { BinanceClient, type BinanceClientOptions, BinanceRequestError } from '.
 
 const DEFAULT_FUNDING_INTERVAL_HOURS = 8;
 
+export interface BinanceVenueAdapterOptions extends BinanceClientOptions {
+  stocksOnly?: boolean;
+}
+
 export class BinanceVenueAdapter implements FundingVenueAdapter {
   readonly id = 'binance' as const;
   private readonly client: BinanceClient;
+  private readonly stocksOnly: boolean;
 
-  constructor(options: BinanceClientOptions) {
+  constructor(options: BinanceVenueAdapterOptions) {
     this.client = new BinanceClient(options);
+    this.stocksOnly = options.stocksOnly ?? false;
   }
 
   async getCurrentSnapshot(onRequestTelemetry?: VenueRequestTelemetrySink): Promise<VenueSnapshot> {
@@ -26,11 +32,15 @@ export class BinanceVenueAdapter implements FundingVenueAdapter {
     ]);
     const eligibleSymbols = symbols.filter((symbol) => (
       symbol.status === 'TRADING'
-      && symbol.contractType === 'PERPETUAL'
+      && symbol.contractType === (this.stocksOnly ? 'TRADIFI_PERPETUAL' : 'PERPETUAL')
       && symbol.quoteAsset === 'USDT'
     ));
     if (eligibleSymbols.length === 0) {
-      throw new BinanceRequestError('No eligible Binance USDT perpetuals');
+      throw new BinanceRequestError(
+        this.stocksOnly
+          ? 'No eligible Binance stock USDT perpetuals'
+          : 'No eligible Binance USDT perpetuals'
+      );
     }
     const eligibleSymbolIds = new Set(eligibleSymbols.map(({ symbol }) => symbol));
     const premiumBySymbol = new Map<string, typeof premiumIndexes[number]>();

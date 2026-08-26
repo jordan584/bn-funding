@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createApp } from '../src/app.js';
+import { BinanceBStocksClient } from '../src/binance/bstocks.js';
 import {
   GoogleChatClient,
   GoogleChatRequestError,
@@ -134,6 +135,15 @@ function dependencies(lastSuccessfulSlot: string | null = null, options: FakeOpt
     error: (event, fields) => { logs.push({ event, ...(fields === undefined ? {} : { fields }) }); }
   };
   const deps: FundingJobDeps = {
+    stockUniverse: {
+      getStockTickers: async () => [
+        ...Array.from(
+          { length: options.candidateCount ?? 25 },
+          (_, index) => assetName(index, options.assetLength)
+        ),
+        'PEPE'
+      ]
+    },
     venues, chat, state, renderImages, imagePublisher, now: () => JOB_AS_OF, logger
   };
   return { deps, calls, logs };
@@ -240,7 +250,7 @@ test('dry-run fetches all current snapshots and only selected Top20 history with
   assert.equal(result.status, 'dry-run');
   assert.equal(result.slot, slot.key);
   assert.equal(result.rowCount, 20);
-  assert.match(result.text, new RegExp(`^五交易所 Funding Top20（截至 ${JOB_AS_OF}）\\n#1 ASSET01`));
+  assert.match(result.text, new RegExp(`^五交易所股票 Funding Top20（截至 ${JOB_AS_OF}）\\n#1 ASSET01`));
   assert.deepEqual(
     calls.filter((call) => call.endsWith('.current')).sort(),
     ['binance.current', 'bitget.current', 'bybit.current', 'hyperliquid.current', 'okx.current']
@@ -291,6 +301,7 @@ test('renders, publishes, sends, and commits state in that order', async () => {
   assert.deepEqual(completed?.fields?.top20CoverageCounts, { two: 0, three: 0, four: 0, five: 20 });
   for (const field of [
     'durationMs',
+    'universeFetchDurationMs',
     'currentFetchDurationMs',
     'rankDurationMs',
     'historyFetchDurationMs',
@@ -403,6 +414,7 @@ test('preserves sanitized partial request progress when current collection fails
   assert.equal(fields?.pushResult, 'not-attempted');
   assert.equal(fields?.slotState, 'eligible');
   assert.equal(typeof fields?.currentFetchDurationMs, 'number');
+  assert.equal(typeof fields?.universeFetchDurationMs, 'number');
 });
 
 test('preserves normalization conflict progress on a rank failure', async () => {
@@ -610,6 +622,11 @@ type FailureCase = readonly [
 ];
 
 const failureCases: FailureCase[] = [
+  ['bStocks universe failure', 'universe-fetch', 'stock-universe', null, {}, (deps) => {
+    deps.stockUniverse.getStockTickers = async () => {
+      throw new VenueRequestError('binance', 'Binance bStocks response validation failed');
+    };
+  }],
   ['one venue current timeout', 'current-fetch', 'okx-timeout', null, {}, (deps) => {
     deps.venues.okx.getCurrentSnapshot = async () => {
       throw new VenueTimeoutError('okx', 'GET', '/api/v5/public/funding-rate');
@@ -661,6 +678,7 @@ for (const [name, expectedStage, expectedCategory, expectedAsOf, options, change
     assert.equal(fields.errorCategory, expectedCategory);
     assert.equal(fields.asOf, expectedAsOf);
     assert.equal(typeof fields.durationMs, 'number');
+    assert.equal(typeof fields.universeFetchDurationMs, 'number');
     assert.equal(typeof fields.currentFetchDurationMs, 'number');
     assert.equal(typeof fields.rankDurationMs, 'number');
     assert.equal(typeof fields.historyFetchDurationMs, 'number');
@@ -693,6 +711,7 @@ test('createApp assembles all five configured venue adapters', () => {
       bybit: new URL('https://api.bybit.com'),
       bitget: new URL('https://api.bitget.com')
     },
+    bStocksBaseUrl: new URL('https://www.binance.com'),
     googleChatWebhookUrl: new URL('https://chat.googleapis.com/v1/spaces/space/messages?key=k&token=t'),
     github: {
       token: 'github_pat_test',
@@ -712,6 +731,7 @@ test('createApp assembles all five configured venue adapters', () => {
   assert.equal(app.venues.hyperliquid.constructor.name, 'HyperliquidClient');
   assert.equal(app.venues.bybit.constructor.name, 'BybitClient');
   assert.equal(app.venues.bitget.constructor.name, 'BitgetClient');
+  assert.ok(app.stockUniverse instanceof BinanceBStocksClient);
   assert.ok(app.chat instanceof GoogleChatClient);
   assert.ok(app.imagePublisher instanceof GitHubImagePublisher);
   assert.equal(typeof app.renderImages, 'function');

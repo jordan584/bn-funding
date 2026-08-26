@@ -13,6 +13,7 @@ import {
   type JobResult,
   type Logger,
   type RunFundingJobOptions,
+  type StockUniverseProvider,
   type VenueId,
   type VenueRequestTelemetry
 } from './domain.js';
@@ -35,6 +36,7 @@ import type { FundingReportImage } from './image/funding-report.js';
 type JobStage =
   | 'state-lock'
   | 'state-check'
+  | 'universe-fetch'
   | 'current-fetch'
   | 'rank'
   | 'history-fetch'
@@ -44,6 +46,7 @@ type JobStage =
   | 'state-commit';
 
 interface StageDurations {
+  universeFetchDurationMs: number;
   currentFetchDurationMs: number;
   rankDurationMs: number;
   historyFetchDurationMs: number;
@@ -69,6 +72,7 @@ interface VenueOperationalFields {
 }
 
 interface JobOperationalFields {
+  stockUniverseCount: number | null;
   candidateCount: number | null;
   rowCount: number | null;
   normalization: NormalizationTelemetry;
@@ -82,6 +86,7 @@ interface JobOperationalFields {
 }
 
 export interface FundingJobDeps {
+  stockUniverse: StockUniverseProvider;
   venues: Record<VenueId, FundingVenueAdapter>;
   chat?: GoogleChatClient;
   renderImages?: (leaderboard: CompositeFundingLeaderboard) => Promise<FundingReportImage[]>;
@@ -107,6 +112,7 @@ function completedLog(
 }
 
 function failureCategory(stage: JobStage, error: unknown): string {
+  if (stage === 'universe-fetch') return 'stock-universe';
   if (error instanceof VenueTimeoutError) return `${error.venue}-timeout`;
   if (error instanceof VenueRequestError) return `${error.venue}-request`;
   if (error instanceof BinanceTimeoutError) return 'binance-timeout';
@@ -147,6 +153,7 @@ function coverageCounts(rows: readonly { coverageCount: number }[]): CoverageCou
 
 function initialOperationalFields(dryRun: boolean): JobOperationalFields {
   return {
+    stockUniverseCount: null,
     candidateCount: null,
     rowCount: null,
     normalization: {
@@ -232,10 +239,11 @@ export async function runFundingJob(
   options: RunFundingJobOptions
 ): Promise<JobResult> {
   const startedAtMs = deps.now();
-  let currentStage: JobStage = options.dryRun ? 'current-fetch' : 'state-lock';
+  let currentStage: JobStage = options.dryRun ? 'universe-fetch' : 'state-lock';
   let asOf: number | undefined;
   const operationalFields = initialOperationalFields(options.dryRun);
   const stageDurations: StageDurations = {
+    universeFetchDurationMs: 0,
     currentFetchDurationMs: 0,
     rankDurationMs: 0,
     historyFetchDurationMs: 0,
@@ -287,6 +295,17 @@ export async function runFundingJob(
       operationalFields.slotState = 'eligible';
     }
 
+    const stockTickers = await measureAsync(
+      'universe-fetch',
+      'universeFetchDurationMs',
+      () => deps.stockUniverse.getStockTickers()
+    );
+    const allowedAssets = new Set(stockTickers);
+    operationalFields.stockUniverseCount = allowedAssets.size;
+    if (allowedAssets.size !== stockTickers.length) {
+      throw new Error('Stock universe contains duplicate tickers');
+    }
+
     const snapshots = await measureAsync(
       'current-fetch',
       'currentFetchDurationMs',
@@ -324,6 +343,7 @@ export async function runFundingJob(
       buildCompositeFundingLeaderboard({
         asOf: asOf!,
         snapshots,
+        allowedAssets,
         onTelemetry: (telemetry) => {
           operationalFields.normalization = telemetry.normalization;
           operationalFields.candidateCoverageCounts = telemetry.candidateCoverageCounts;

@@ -277,6 +277,7 @@ test('runs all five production adapters through local HTTP, sends once, then ski
   const logger: Logger = { info: () => {}, warn: () => {}, error: () => {} };
   let publishedImages: readonly FundingReportImage[] = [];
   const deps = {
+    stockUniverse: { getStockTickers: async () => [...assets] },
     venues: {
       binance: new BinanceVenueAdapter({ baseUrl }),
       okx: new OkxClient({ baseUrl, minRequestIntervalMs: 0, now: () => AS_OF }),

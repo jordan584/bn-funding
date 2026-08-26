@@ -1,4 +1,5 @@
 import { BinanceVenueAdapter } from './binance/adapter.js';
+import { BinanceBStocksClient } from './binance/bstocks.js';
 import { BitgetClient } from './bitget/client.js';
 import { BybitClient } from './bybit/client.js';
 import { GoogleChatClient } from './chat/client.js';
@@ -21,26 +22,35 @@ function createLogger(): Logger {
 
 export function createApp(config: AppConfig): FundingJobDeps {
   return {
+    stockUniverse: new BinanceBStocksClient({
+      baseUrl: config.bStocksBaseUrl,
+      timeoutMs: config.exchangeTimeoutMs
+    }),
     venues: {
       binance: new BinanceVenueAdapter({
         baseUrl: config.exchangeBaseUrls.binance,
-        timeoutMs: config.exchangeTimeoutMs
+        timeoutMs: config.exchangeTimeoutMs,
+        stocksOnly: true
       }),
       okx: new OkxClient({
         baseUrl: config.exchangeBaseUrls.okx,
-        timeoutMs: config.exchangeTimeoutMs
+        timeoutMs: config.exchangeTimeoutMs,
+        stocksOnly: true
       }),
       hyperliquid: new HyperliquidClient({
         baseUrl: config.exchangeBaseUrls.hyperliquid,
-        timeoutMs: config.exchangeTimeoutMs
+        timeoutMs: config.exchangeTimeoutMs,
+        dex: 'xyz'
       }),
       bybit: new BybitClient({
         baseUrl: config.exchangeBaseUrls.bybit,
-        timeoutMs: config.exchangeTimeoutMs
+        timeoutMs: config.exchangeTimeoutMs,
+        stocksOnly: true
       }),
       bitget: new BitgetClient({
         baseUrl: config.exchangeBaseUrls.bitget,
-        timeoutMs: config.exchangeTimeoutMs
+        timeoutMs: config.exchangeTimeoutMs,
+        stocksOnly: true
       })
     },
     ...(config.googleChatWebhookUrl === undefined

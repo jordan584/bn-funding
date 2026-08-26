@@ -38,6 +38,28 @@ test('joins main-dex metadata and contexts by index and emits hourly funding', a
   assert.deepEqual(JSON.parse(String(seen[0]!.init?.body)), { type: 'metaAndAssetCtxs' });
 });
 
+test('reads the XYZ HIP-3 stock DEX and keeps the prefixed market id for history', async () => {
+  const seen: SeenRequest[] = [];
+  const client = new HyperliquidClient({
+    baseUrl,
+    dex: 'xyz',
+    fetch: queuedFetch([jsonResponse([
+      { universe: [activeAsset('xyz:NVDA')] },
+      [context()]
+    ])], seen),
+    now: () => AS_OF,
+    sleep: async () => {}
+  });
+
+  const snapshot = await client.getCurrentSnapshot();
+
+  assert.equal(snapshot.markets[0]?.marketId, 'xyz:NVDA');
+  assert.equal(snapshot.markets[0]?.rawBaseAsset, 'NVDA');
+  assert.deepEqual(JSON.parse(String(seen[0]!.init?.body)), {
+    type: 'metaAndAssetCtxs', dex: 'xyz'
+  });
+});
+
 test('rejects metadata/context length mismatch instead of shifting assets', async () => {
   const client = new HyperliquidClient({
     baseUrl,
